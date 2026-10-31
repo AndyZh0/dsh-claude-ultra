@@ -38,6 +38,17 @@ export const ULTRA_KEYWORD_REQUEST = "The user included the keyword \"ultracode\
  */
 export const ULTRATHINK_EFFORT = "The user included the keyword \"ultrathink\", requesting deeper reasoning on this turn. Reason as thoroughly as the task warrants."
 
+/**
+ * Typed prompts between the short repeat reminders while ultracode is on.
+ *
+ * Claude counts the non-meta user messages newer than its last Ultra reminder
+ * and repeats the short text once the count reaches this interval
+ * (\`Bxr.TURNS_BETWEEN_MAINTENANCE\` in the same bundle, byte offset 294821817;
+ * an environment variable, a remote gate, and a config key can override it, but
+ * the shipped value is 10).
+ */
+export const ULTRA_SPARSE_INTERVAL = 10
+
 /** The DSH delegation surface, as the root agent sees it. */
 export const ROOT_USAGE_HINT = [
   "You are the primary agent in a team of agents collaborating to fulfill the user's goals.",

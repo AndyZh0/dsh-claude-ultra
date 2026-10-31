@@ -102,7 +102,10 @@ export function summarizeSession(events) {
         enter: text.includes('Ultracode is on:'),
         still: text.includes('Ultracode is still on'),
         exit: text.includes('Ultracode is off'),
-        keyword: text.includes('The user included the keyword'),
+        // Both keyword reminders open with "The user included the keyword", so
+        // each flag matches its own reminder's distinctive tail instead.
+        keyword: text.includes('opting this turn into multi-agent orchestration'),
+        ultrathink: text.includes('requesting deeper reasoning on this turn'),
       })
       continue
     }

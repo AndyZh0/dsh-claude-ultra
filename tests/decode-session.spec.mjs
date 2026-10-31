@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zstdCompressSync } from 'node:zlib'
 import {
+  ULTRATHINK_EFFORT,
   ULTRA_ENTER_FULL,
   ULTRA_ENTER_STILL,
   ULTRA_EXIT,
@@ -189,8 +190,8 @@ test('each turn carries the flags of its own system message', () => {
   ])
   assert.equal(summary.turns[0].prompt, 'prompt A')
   assert.equal(summary.turns[1].prompt, 'prompt B')
-  assert.deepEqual(systemOf(summary, 1), [{ turn: 1, step: 1, enter: true, still: false, exit: false, keyword: false }])
-  assert.deepEqual(systemOf(summary, 2), [{ turn: 2, step: 1, enter: false, still: true, exit: false, keyword: false }])
+  assert.deepEqual(systemOf(summary, 1), [{ turn: 1, step: 1, enter: true, still: false, exit: false, keyword: false, ultrathink: false }])
+  assert.deepEqual(systemOf(summary, 2), [{ turn: 2, step: 1, enter: false, still: true, exit: false, keyword: false, ultrathink: false }])
 })
 
 test('turns are reported in turn order, not arrival order', () => {
@@ -200,17 +201,21 @@ test('turns are reported in turn order, not arrival order', () => {
 
 // --- the Ultra flags --------------------------------------------------------
 
+/** Every flag one logged system message can carry. */
+const FLAGS = ['enter', 'still', 'exit', 'keyword', 'ultrathink']
+
 test('each shipped reminder sets exactly its own flag', () => {
   const cases = [
     [ULTRA_ENTER_FULL, 'enter'],
     [ULTRA_ENTER_STILL, 'still'],
     [ULTRA_EXIT, 'exit'],
     [ULTRA_KEYWORD_REQUEST, 'keyword'],
+    [ULTRATHINK_EFFORT, 'ultrathink'],
   ]
   cases.forEach(([text, expected], index) => {
     const summary = summarizeSession([systemEvent(index + 1, text)])
     const [entry] = systemOf(summary, index + 1)
-    for (const flag of ['enter', 'still', 'exit', 'keyword']) {
+    for (const flag of FLAGS) {
       assert.equal(entry[flag], flag === expected, expected + ' case, flag ' + flag)
     }
   })
@@ -221,17 +226,57 @@ test('the decoder matches the reminder substrings it is written against', () => 
     ['Ultracode is on: go', 'enter'],
     ['Ultracode is still on — go', 'still'],
     ['Ultracode is off — go', 'exit'],
-    ['The user included the keyword "ultracode", go', 'keyword'],
+    ['The user included the keyword "ultracode", opting this turn into multi-agent orchestration', 'keyword'],
+    ['The user included the keyword "ultrathink", requesting deeper reasoning on this turn', 'ultrathink'],
   ]
   cases.forEach(([text, expected], index) => {
     const [entry] = systemOf(summarizeSession([systemEvent(index + 1, text)]), index + 1)
-    assert.equal(entry[expected], true, expected)
+    for (const flag of FLAGS) {
+      assert.equal(entry[flag], flag === expected, expected + ' case, flag ' + flag)
+    }
   })
 })
 
 test('an unrelated system message sets no flag', () => {
   const summary = summarizeSession([systemEvent(1, 'just the base system prompt')])
-  assert.deepEqual(systemOf(summary, 1), [{ turn: 1, step: 1, enter: false, still: false, exit: false, keyword: false }])
+  assert.deepEqual(systemOf(summary, 1), [{ turn: 1, step: 1, enter: false, still: false, exit: false, keyword: false, ultrathink: false }])
+})
+
+// Both keyword reminders open with "The user included the keyword", so a flag
+// matched on that prefix alone would report the wrong one.
+
+test('the two keyword reminders are not conflated', () => {
+  const [ultracode] = systemOf(summarizeSession([systemEvent(1, ULTRA_KEYWORD_REQUEST)]), 1)
+  assert.equal(ultracode.keyword, true)
+  assert.equal(ultracode.ultrathink, false)
+  const [ultrathink] = systemOf(summarizeSession([systemEvent(1, ULTRATHINK_EFFORT)]), 1)
+  assert.equal(ultrathink.keyword, false)
+  assert.equal(ultrathink.ultrathink, true)
+})
+
+test('the shared keyword prefix alone sets neither flag', () => {
+  const [entry] = systemOf(summarizeSession([systemEvent(1, 'The user included the keyword')]), 1)
+  assert.equal(entry.keyword, false)
+  assert.equal(entry.ultrathink, false)
+})
+
+test('a message carrying both reminders sets both flags', () => {
+  const [entry] = systemOf(summarizeSession([systemEvent(1, ULTRA_KEYWORD_REQUEST + ' ' + ULTRATHINK_EFFORT)]), 1)
+  assert.equal(entry.keyword, true)
+  assert.equal(entry.ultrathink, true)
+})
+
+test('each turn carries the keyword flag of its own reminder', () => {
+  const summary = summarizeSession([
+    systemEvent(1, ULTRA_KEYWORD_REQUEST),
+    userEvent('prompt A'),
+    systemEvent(2, ULTRATHINK_EFFORT),
+    userEvent('prompt B'),
+  ])
+  assert.equal(systemOf(summary, 1)[0].keyword, true)
+  assert.equal(systemOf(summary, 1)[0].ultrathink, false)
+  assert.equal(systemOf(summary, 2)[0].keyword, false)
+  assert.equal(systemOf(summary, 2)[0].ultrathink, true)
 })
 
 test('the reminder text is read out of the text blocks', () => {

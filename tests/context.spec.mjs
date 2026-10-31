@@ -2,16 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   apply,
+  applyClaudeUltraModeProjection,
   CLAUDE_ULTRA_KEYWORD_SECTION,
   CLAUDE_ULTRA_ULTRATHINK_SECTION,
   createClaudeUltraArmStore,
   createClaudeUltraBoostStore,
   createClaudeUltraKeywordStore,
+  EMPTY_CLAUDE_ULTRA_MODE_STATE,
   registerClaudeUltraKeywordCapture,
   resolveClaudeUltraReminder,
   SUBAGENT_USAGE_HINT,
   ULTRATHINK_EFFORT,
   ULTRA_ENTER_FULL,
+  ULTRA_ENTER_STILL,
   ULTRA_EXIT,
   ULTRA_KEYWORD_REQUEST,
   usageHintFor,
@@ -22,6 +25,9 @@ const SECTION = 'claude-ultra:mode'
 const KEYWORD_SECTION = 'claude-ultra:keyword'
 const ULTRATHINK_SECTION = 'claude-ultra:ultrathink'
 const ARM = { provider: 'acme', model: 'astra', effort: 'max' }
+// The shipped repeat interval, pinned here so a change to ULTRA_SPARSE_INTERVAL
+// in src/prompts.ts fails this suite instead of silently re-timing the reminder.
+const SPARSE_INTERVAL = 10
 
 /** The selection the next request will use. */
 function selection(overrides = {}) {
@@ -117,8 +123,8 @@ function armsWith(entries = {}) {
   return arms
 }
 
-function modeState(mode, dirty) {
-  return { [KEY]: { mode, dirty } }
+function modeState(mode, dirty, prompts = 0, markerAt = 0) {
+  return { [KEY]: { mode, dirty, prompts, markerAt } }
 }
 
 // --- resolveClaudeUltraReminder ---------------------------------------------
@@ -150,14 +156,14 @@ test('a selection after an entry snapshot materializes the exit reminder', () =>
   assert.equal(resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore()), 'off')
 })
 
-test('a snapshot that already records the exit keeps it standing', () => {
+test('an exit snapshot does not repeat the exit reminder', () => {
   const ctx = context({ states: { root: modeState('off', false) } })
-  assert.equal(resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore()), 'off')
+  assert.equal(resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore()), null)
 })
 
-test('a repeat snapshot without an arm keeps repeating', () => {
+test('a repeat snapshot below the interval keeps quiet', () => {
   const ctx = context({ states: { root: modeState('still', false) } })
-  assert.equal(resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore()), 'still')
+  assert.equal(resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore()), null)
 })
 
 test('the pending model selection is read from the projection', () => {
@@ -206,13 +212,15 @@ test('a subagent whose parent session is not live has no reminder', () => {
   assert.equal(resolveClaudeUltraReminder(context(), child, createClaudeUltraArmStore()), null)
 })
 
-test('a subagent with its own exit snapshot does not inherit the parent', () => {
+test('a subagent whose own snapshot left Ultra still inherits an active parent', () => {
+  // The subagent branch runs whenever the child's own snapshot is not entering,
+  // and it does not ask whether that snapshot recorded an exit.
   const child = agent('child', { header: { origin: 'subagent', parentSession: 'parent' } })
   const ctx = context({
     states: { child: modeState('off', false), parent: modeState('full', false) },
     agents: { parent: agent('parent') },
   })
-  assert.equal(resolveClaudeUltraReminder(ctx, child, createClaudeUltraArmStore()), 'off')
+  assert.equal(resolveClaudeUltraReminder(ctx, child, createClaudeUltraArmStore()), 'full')
 })
 
 // --- the keyword store ------------------------------------------------------
@@ -551,14 +559,22 @@ function insert(ctx, sessionId, message) {
 }
 
 test('the assembly listener delegates upstream and appends one Ultra section', async () => {
-  const { listener } = mount({ states: { root: modeState('full', false) } })
+  const { listener } = mount({ states: { root: modeState('still', false, SPARSE_INTERVAL, 0) } })
   const upstream = { sections: [{ name: 'base', text: 'base' }] }
   const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
   assert.equal(counter.next, 1)
   assert.equal(result.sections.length, 2)
   assert.equal(result.sections[0], upstream.sections[0])
   assert.equal(result.sections[1].name, SECTION)
-  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_FULL)
+  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_STILL)
+})
+
+test('an assembly below the repeat interval appends nothing', async () => {
+  const { listener } = mount({ states: { root: modeState('still', false, SPARSE_INTERVAL - 1, 0) } })
+  const upstream = { sections: [{ name: 'base', text: 'base' }] }
+  const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(counter.next, 1)
+  assert.equal(result, upstream)
 })
 
 test('a subagent assembly carries the subagent usage hint', async () => {
@@ -570,7 +586,7 @@ test('a subagent assembly carries the subagent usage hint', async () => {
 })
 
 test('an exit assembly carries the exit reminder', async () => {
-  const { listener } = mount({ states: { root: modeState('off', false) } })
+  const { listener } = mount({ states: { root: modeState('full', true) } })
   const { result } = await assemble(listener, { sections: [] }, { agent: agent('root') })
   assert.equal(result.sections.length, 1)
   assert.equal(result.sections[0].text, usageHintFor(false) + '\n\n' + ULTRA_EXIT)
@@ -622,7 +638,7 @@ test('the keyword section carries the pinned keyword request text', async () => 
 })
 
 test('a standing reminder and a typed prompt append two sections, mode first', async () => {
-  const { ctx, listener } = mount({ states: { root: modeState('full', false) } })
+  const { ctx, listener } = mount({ states: { root: modeState('still', false, SPARSE_INTERVAL, 0) } })
   const upstream = { sections: [{ name: 'base', text: 'base' }] }
   insert(ctx, 'root', inboxMessage(['please ultracode this'], TYPED))
   const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
@@ -631,7 +647,7 @@ test('a standing reminder and a typed prompt append two sections, mode first', a
   assert.equal(result.sections[0], upstream.sections[0])
   assert.equal(result.sections[1].name, SECTION)
   assert.equal(result.sections[2].name, KEYWORD_SECTION)
-  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_FULL)
+  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_STILL)
   assert.equal(result.sections[2].text, ULTRA_KEYWORD_REQUEST)
 })
 
@@ -743,7 +759,7 @@ test('the ultrathink section carries the pinned ultrathink text', async () => {
 })
 
 test('all three conditions append mode, keyword, then ultrathink', async () => {
-  const { ctx, listener } = mount({ states: { root: modeState('full', false) } })
+  const { ctx, listener } = mount({ states: { root: modeState('still', false, SPARSE_INTERVAL, 0) } })
   const upstream = { sections: [{ name: 'base', text: 'base' }] }
   insert(ctx, 'root', inboxMessage(['ultracode and ultrathink'], TYPED))
   const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
@@ -751,7 +767,7 @@ test('all three conditions append mode, keyword, then ultrathink', async () => {
   assert.equal(result.sections.length, 4)
   assert.equal(result.sections[0], upstream.sections[0])
   assert.deepEqual(result.sections.slice(1).map(section => section.name), [SECTION, KEYWORD_SECTION, ULTRATHINK_SECTION])
-  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_FULL)
+  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_STILL)
   assert.equal(result.sections[2].text, ULTRA_KEYWORD_REQUEST)
   assert.equal(result.sections[3].text, ULTRATHINK_EFFORT)
 })
@@ -1060,7 +1076,7 @@ test('the undo belongs to the session that was boosted', async () => {
 })
 
 test('turn end submits the undo and leaves the keyword opt-in standing', async () => {
-  const { ctx, listener } = mount({ modelInfo: LEVELS, states: { root: modeState('full', false) } })
+  const { ctx, listener } = mount({ modelInfo: LEVELS, states: { root: modeState('still', false, SPARSE_INTERVAL, 0) } })
   insert(ctx, 'root', inboxMessage(['ultracode and ultrathink'], TYPED))
   await request(ctx, 'root', BOOSTED)
   ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
@@ -1068,5 +1084,96 @@ test('turn end submits the undo and leaves the keyword opt-in standing', async (
   assert.equal(ctx.selectCalls.length, 1)
   const { result } = await assemble(listener, { sections: [] }, { agent: agent('root') })
   assert.deepEqual(result.sections.map(section => section.name), [SECTION, KEYWORD_SECTION])
+})
+
+
+// --- the reminder cadence ---------------------------------------------------
+//
+// Claude's attachment builder walks the conversation backwards from the newest
+// message, counting user messages until it reaches the newest reminder. The fold
+// records the prompt count and where the last reminder was logged; the resolver
+// reproduces that cadence from the two.
+
+/** A logged system message carrying the given text blocks. */
+function systemMessage(...texts) {
+  return { type: 'system/message', data: { message: { content: texts.map(text => ({ type: 'text', text })) } } }
+}
+
+/** A logged user message the human typed. */
+function typedPrompt(text = 'a prompt') {
+  return { type: 'user/message', data: { source: { kind: 'user' }, content: [{ type: 'text', text }] } }
+}
+
+/** Fold a run of events, starting from a given state. */
+function foldFrom(state, ...events) {
+  return events.reduce((current, event) => applyClaudeUltraModeProjection(current, event), state)
+}
+
+/** Fold a run of events into a fresh projection, as the Session log would. */
+function fold(...events) {
+  return foldFrom(EMPTY_CLAUDE_ULTRA_MODE_STATE, ...events)
+}
+
+/** A run of n typed prompts. */
+function typedPrompts(count) {
+  return Array.from({ length: count }, () => typedPrompt())
+}
+
+/** Resolve the reminder for a root agent holding one folded state. */
+function reminderFor(state) {
+  const ctx = context({ states: { root: { [KEY]: state } } })
+  return resolveClaudeUltraReminder(ctx, agent('root'), createClaudeUltraArmStore())
+}
+
+/** Enter Ultra on the first turn, then run n typed prompts after it. */
+function enteredThen(count) {
+  return fold(systemMessage(ULTRA_ENTER_FULL), ...typedPrompts(count))
+}
+
+test('a fresh entry without an arm yields nothing', () => {
+  assert.equal(reminderFor(enteredThen(0)), null)
+})
+
+test('the repeat reminder waits for the interval', () => {
+  assert.equal(reminderFor(enteredThen(SPARSE_INTERVAL - 1)), null)
+  assert.equal(reminderFor(enteredThen(SPARSE_INTERVAL)), 'still')
+})
+
+test('a logged reminder re-marks the count', () => {
+  const due = enteredThen(12)
+  assert.equal(reminderFor(due), 'still')
+  const reMarked = applyClaudeUltraModeProjection(due, systemMessage(ULTRA_ENTER_STILL))
+  assert.equal(reMarked.markerAt, 12)
+  assert.equal(reminderFor(reMarked), null)
+  assert.equal(reminderFor(foldFrom(reMarked, ...typedPrompts(SPARSE_INTERVAL - 1))), null)
+  assert.equal(reminderFor(foldFrom(reMarked, ...typedPrompts(SPARSE_INTERVAL))), 'still')
+})
+
+test('the exit reminder is emitted once', () => {
+  const dirty = applyClaudeUltraModeProjection(fold(systemMessage(ULTRA_ENTER_FULL)), { type: 'model/selection' })
+  assert.equal(reminderFor(dirty), 'off')
+  const exited = applyClaudeUltraModeProjection(dirty, systemMessage(ULTRA_EXIT))
+  assert.equal(reminderFor(exited), null)
+  assert.equal(reminderFor(foldFrom(exited, ...typedPrompts(50))), null)
+})
+
+test('an arm announces Ultra at the start of the interval', () => {
+  const ctx = context()
+  const root = agent('root', { config: selection() })
+  assert.equal(resolveClaudeUltraReminder(ctx, root, armsWith({ root: ARM })), 'full')
+})
+
+test('an arm ignores the interval when Ultra is already on', () => {
+  const entered = enteredThen(0)
+  assert.equal(entered.prompts - entered.markerAt, 0)
+  const ctx = context({ states: { root: { [KEY]: entered } } })
+  const root = agent('root', { config: selection() })
+  assert.equal(resolveClaudeUltraReminder(ctx, root, armsWith({ root: ARM })), 'still')
+})
+
+test('a subagent of an active parent still starts with the full entry', () => {
+  const child = agent('child', { header: { origin: 'subagent', parentSession: 'parent' } })
+  const ctx = context({ states: { parent: { [KEY]: enteredThen(0) } }, agents: { parent: agent('parent') } })
+  assert.equal(resolveClaudeUltraReminder(ctx, child, createClaudeUltraArmStore()), 'full')
 })
 

@@ -34,7 +34,7 @@ Build the package inside this directory; development dependencies and artifacts 
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.4.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.5.tgz"
 ```
 
 Install into the profile you actually use. `dsh plugin add` appends the bundle row and runs pnpm inside the profile directory. A profile composes its bundle rows at boot, so restart the app afterwards; `patchReload: live` reloads patch and config edits, not a new bundle row.
@@ -91,6 +91,8 @@ Verbatim, with one substitution: DSH has no Workflow tool, so `the Workflow tool
 
 The exit text's second sentence restates the opt-in rule from Claude's Workflow tool description (`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`), which is the rule the first sentence refers to.
 
+The cadence is Claude's too, from the attachment builder in the same bundle: the full text on the first turn under Ultra, the short text once every 10 typed prompts, the exit text once when the mode ends, and no section at all on the turns in between. Claude measures the interval by walking the conversation back to its newest Ultra reminder and counting the user messages after it; this plugin measures it from a durable prompt count in the projection, which is the same number.
+
 <a id="compatibility"></a>
 ## Compatibility
 
@@ -103,7 +105,6 @@ The exit text's second sentence restates the opt-in rule from Claude's Workflow 
 ## Known Limitations and Deferred Work
 
 - **The switcher is required.** `dsh-codex-effort-switcher` must be in the same profile. The client half reads its `codexModelTiers` service through `ctx.get` rather than `ctx.inject`, because a pending inject is reported by the client boot audit as a failed plugin load and blanks the whole surface; a composition without the switcher therefore loads normally and simply contributes no tier.
-- **Reminder cadence.** Claude emits the entry reminder on the first turn and then a sparse one every 10 user turns (`Uxr()`), and the exit reminder once. Here the entry reminder is re-emitted on every assembly (full first, then the still-on text) and the exit text is re-emitted while the mode is off. Claude's reminders are message attachments, so repeating them would grow its transcript; this section is rebuilt into each request's system prompt, where repeating costs no context. The text is Claude's; the frequency is the DSH-native equivalent.
 - **The `ultrathink` boost is undone at the turn's end.** DSH keeps the effort in the request header, which every later request inherits, so a boost that only rewrote the request config would raise the Session for good. The turn's end submits a selection restoring what the boost displaced, through `ctx.get('sessionController')` rather than an injection, so a composition without that service still loads and the boost then lasts until the Session's next selection. A selection the user makes during the boosted turn cancels the undo instead of being overwritten by it, and a prompt queued mid-turn loses its boost to the same `turn/end` — unlike the `ultracode` opt-in, which the turn that claims the prompt consumes.
 - **Default selection save.** The standard `session.selectModel` path also saves the selection as the profile default where DSH does so, so selecting Ultra can leave the top level as the saved default for new sessions. The saved value carries the effort but not the mode, so a new session can start at that level without Ultra's instruction. This is the switcher's shared selection path, not a separate Ultra path.
 - **The arm is in memory until the first request.** Selecting Ultra and reloading before sending a prompt loses the local cell. After the first request the logged system message restores it.
@@ -121,7 +122,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 184 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
+`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 258 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
 
 `npm run smoke` is the end-to-end lane, and the only one that proves the wiring rather than the units. It packs and installs both plugins into a throwaway `DSH_HOME` profile through the built CLI, points a fixture provider at a local OpenAI-compatible endpoint that records every request body, boots `dsh web` from the checkout, and drives Microsoft Edge through the real card. It asserts that the fifth Ultra tier exists, that selecting it routes `reasoning_effort: max` and carries the entry section, that a prompt containing `ultracode` at a lower tier carries the keyword section instead, and that the opt-in does not survive into the next turn. It needs the switcher beside this package (or `DSH_SWITCHER_TGZ` pointing at a packed archive), a built DSH checkout, and Microsoft Edge; evidence lands under `.runtime/browser-*`.
 

@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.4.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.5.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。
@@ -91,6 +91,8 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 
 退出文案的第二句复述了 Claude Workflow 工具描述里的 opt-in 规则（`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`），也就是第一句所指的那条规则。
 
+提醒节奏同样是 Claude 的，取自同一 bundle 里的 attachment 构造器：进入 Ultra 的第一轮发完整文案，之后每 10 条用户 prompt 发一次短文案，模式结束时发一次退出文案，其余轮次**完全不发** section。Claude 的算法是从对话末尾往回找到最近的 Ultra 提醒、再数它之后的用户消息；本插件则用投影里一个可持久化的 prompt 计数来量，两者是同一个数。
+
 <a id="兼容性"></a>
 ## 兼容性
 
@@ -103,7 +105,6 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 ## 已知限制与后续工作
 
 - **必须安装切换器。** `dsh-codex-effort-switcher` 必须在同一 profile 中。浏览器半通过 `ctx.get` 而非 `ctx.inject` 读取它的 `codexModelTiers` 服务，因为 pending 的 inject 会被客户端启动审计判为插件加载失败并让整个界面白屏；因此没有切换器的组合能正常加载，只是不贡献任何档位。
-- **提醒节奏。** Claude 在第一轮发出进入提醒，之后每 10 个用户轮次发一次稀疏提醒（`Uxr()`），退出时只发一次。本插件每次组装都会重申进入提醒（先是 full，之后是 still-on 文本），并在关闭态下持续重申退出文案。Claude 的提醒是消息附件，重复会撑大它的对话；本 section 是每次请求重建的系统提示词，重复不占额外上下文。文本是 Claude 的，频率是 DSH 语境下的等价做法。
 - **`ultrathink` 的 boost 会在该轮结束时撤销。** DSH 把强度存在请求头里，之后的每个请求都会继承，所以只改写请求 config 的 boost 会把整个会话永久抬高。轮结束时插件会提交一次选择，把 boost 顶掉的原值还回去；这一步通过 `ctx.get('sessionController')` 而非注入获取，因此没有该服务的组合仍能加载，只是 boost 会持续到该会话下一次选择。用户在 boost 那一轮里自己做的选择会取消这次撤销，而不是被它覆盖。中途排队的 prompt 会在同一个 `turn/end` 丢掉 boost —— 这点与 `ultracode` 的 opt-in 不同，后者由认领该 prompt 的那一轮消费。
 - **默认选择会被保存。** 标准 `session.selectModel` 路径同时会把该选择保存为 profile 默认值，因此选中 Ultra 可能把顶层强度留作新会话的默认。保存的是强度而非模式，所以新会话可能以该强度开始却没有 Ultra 的指令。这是切换器共享的选择路径，不是 Ultra 独有的路径。
 - **首次请求前 arm 只在内存里。** 选中 Ultra 后立刻刷新页面会丢掉本地格子；首次请求之后由已记录的 system message 还原。
@@ -121,7 +122,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 184 条断言。每条 spec 都有已记录的负向证明。
+`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 258 条断言。每条 spec 都有已记录的负向证明。
 
 `npm run smoke` 是端到端那条通道，也是唯一能证明"接线正确"而不只是"单元正确"的。它把两个插件通过构建好的 CLI 打包安装进一次性的 `DSH_HOME` profile，把夹具提供商指向一个会记录每个请求体的本地 OpenAI 兼容端点，从 checkout 启动 `dsh web`，并用 Microsoft Edge 真实操作卡片。它断言：第五档 Ultra 存在；选中它会把 `reasoning_effort: max` 发上线并带上进入文案；在较低档位下发含 `ultracode` 的 prompt 会改为带上关键字文案；以及该 opt-in 不会延续到下一轮。它需要切换器与本包并排（或用 `DSH_SWITCHER_TGZ` 指向已打包的归档）、构建好的 DSH checkout、以及 Microsoft Edge；证据落在 `.runtime/browser-*`。
 

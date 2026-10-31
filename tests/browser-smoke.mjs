@@ -210,6 +210,8 @@ try {
   const plainRequest = turnRequestOf(await send('Reply with the fixture text again.'))
   assert.ok(plainRequest !== undefined, 'the follow-up turn produced no tool-bearing request')
   assert.ok(!promptText(plainRequest).includes('opting this turn into multi-agent orchestration'), 'the keyword section leaked into the next turn')
+  // Claude emits the exit reminder once, not on every later turn.
+  assert.ok(!promptText(plainRequest).includes('Ultracode is off'), 'the exit reminder repeated after the turn that announced it')
 
   // Path 4: ultrathink raises this turn's effort without touching the tier, and
   // the boost is turn-scoped, so the turn after it is back at the tier's level.

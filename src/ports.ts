@@ -14,6 +14,8 @@ export interface UltraSessionEvent {
   readonly type: string
   readonly data?: {
     readonly message?: { readonly content?: readonly UltraContentBlock[] }
+    /** Present on `user/message`; `user` marks a prompt the human typed. */
+    readonly source?: { readonly kind?: string }
   }
 }
 

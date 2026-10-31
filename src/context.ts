@@ -25,6 +25,7 @@ import {
   ULTRA_ENTER_STILL,
   ULTRA_EXIT,
   ULTRA_KEYWORD_REQUEST,
+  ULTRA_SPARSE_INTERVAL,
   usageHintFor,
 } from './prompts.ts'
 
@@ -84,22 +85,34 @@ function isEntering(state: ClaudeUltraModeState): boolean {
 /**
  * Resolve the reminder one Agent's next assembly must materialize.
  *
- * The arm intent wins while it still matches the selection; a selection after an
- * entry snapshot forces the exit text; otherwise the last snapshot is
- * authoritative. A subagent with no snapshot of its own inherits an active
+ * Claude's cadence, from the attachment builder in the same bundle (byte offset
+ * 294845975): the full text on the first turn under ultracode, the short text
+ * once every {@link ULTRA_SPARSE_INTERVAL} typed prompts, the exit text once
+ * when the mode ends, and nothing otherwise. The interval is measured from the
+ * prompt count the last reminder was logged at, which reproduces Claude's
+ * backwards scan for the newest reminder and the user messages newer than it.
+ *
+ * The arm intent wins while it still matches the selection, so a tier the user
+ * just picked is always announced; a selection after an entry snapshot forces
+ * the exit text. A subagent with no snapshot of its own inherits an active
  * parent, so a child spawned under Ultra starts with the full entry text.
  * @param ctx - Host context carrying projections and the agent registry.
  * @param agent - Agent entering prompt assembly.
  * @param arms - pre-request arm store.
- * @returns the reminder to materialize, or null when Ultra is not active.
+ * @returns the reminder to materialize, or null when this turn gets none.
  */
 export function resolveClaudeUltraReminder(ctx: ClaudeUltraContext, agent: UltraAgent, arms: UltraArmStore): UltraReminder | null {
   const state = ultraStateOf(ctx, agent.session)
   const selection = selectionOf(ctx, agent)
   if (armMatches(arms.get(String(agent.session.id)), selection)) return isEntering(state) ? 'still' : 'full'
-  if (isEntering(state) && state.dirty) return 'off'
-  if (state.mode !== null) return state.mode
+  if (isEntering(state)) {
+    if (state.dirty) return 'off'
+    return state.prompts - state.markerAt >= ULTRA_SPARSE_INTERVAL ? 'still' : null
+  }
   if (!isSubagent(agent)) return null
+  // A child's own snapshot records what it was last told; the parent's current
+  // state decides whether the child runs under Ultra now, so a child that once
+  // left still inherits an active parent.
   const parentId = agent.session.header.parentSession
   if (parentId === undefined) return null
   const parent = ctx.agents.get(parentId)
