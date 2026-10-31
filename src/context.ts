@@ -158,12 +158,19 @@ export function registerClaudeUltraKeywordCapture(ctx: ClaudeUltraContext, keywo
     keywords.set(sessionId, hasUltraKeyword(text))
     boosts.set(sessionId, hasUltrathinkKeyword(text))
   })
-  const offPreStep = ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+  const offPreStep = ctx.on('agent/pre-step', async ({ agent, messages, turn }, next) => {
     const consumed = messages.some((message: UltraUserMessage) => message.source?.kind === 'user')
     const result = await next()
+    const sessionId = String(agent.session.id)
     // A step that claimed a typed prompt belongs to the turn that prompt opened,
     // so its assembly has already read the opt-in.
-    if (consumed) keywords.clear(String(agent.session.id))
+    if (consumed) {
+      keywords.clear(sessionId)
+      // The boost is bound here rather than at its insertion, because a prompt
+      // typed while a turn is still running is inserted before that turn ends
+      // and would otherwise be bound to the wrong one.
+      boosts.bind(sessionId, turn)
+    }
     return result
   })
   return () => {

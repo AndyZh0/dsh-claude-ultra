@@ -1,6 +1,6 @@
 {
   "name": "dsh-claude-ultra",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Claude-style Ultra mode for DSH: the top reasoning effort plus standing multi-agent orchestration",
   "type": "module",
   "license": "MIT",
@@ -19,6 +19,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "CHANGELOG.md",
     "lib",
     "cordis.patch.yml",
     "README.md",
@@ -41,6 +42,7 @@
     "pretest": "node scripts/build.mjs && node scripts/build-test.mjs",
     "test": "node --test \"tests/*.spec.mjs\"",
     "smoke": "node tests/browser-smoke.mjs",
+    "smoke:noswitcher": "node tests/browser-smoke-noswitcher.mjs",
     "prepack": "node scripts/build.mjs"
   },
   "dependencies": {

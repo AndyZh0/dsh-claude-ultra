@@ -34,7 +34,7 @@ Build the package inside this directory; development dependencies and artifacts 
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.6.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.7.tgz"
 ```
 
 Install into the profile you actually use. `dsh plugin add` appends the bundle row and runs pnpm inside the profile directory. A profile composes its bundle rows at boot, so restart the app afterwards; `patchReload: live` reloads patch and config edits, not a new bundle row.
@@ -109,7 +109,9 @@ The cadence is Claude's too, from the attachment builder in the same bundle: the
 ## Known Limitations and Deferred Work
 
 - **The switcher is required.** `dsh-codex-effort-switcher` must be in the same profile. The client half reads its `codexModelTiers` service through `ctx.get` rather than `ctx.inject`, because a pending inject is reported by the client boot audit as a failed plugin load and blanks the whole surface; a composition without the switcher therefore loads normally and simply contributes no tier.
-- **The `ultrathink` boost is undone at the turn's end.** DSH keeps the effort in the request header, which every later request inherits, so a boost that only rewrote the request config would raise the Session for good. The turn's end submits a selection restoring what the boost displaced, through `ctx.get('sessionController')` rather than an injection, so a composition without that service still loads and the boost then lasts until the Session's next selection. A selection the user makes during the boosted turn cancels the undo instead of being overwritten by it, and a prompt queued mid-turn loses its boost to the same `turn/end` — unlike the `ultracode` opt-in, which the turn that claims the prompt consumes.
+- **The `ultrathink` boost is undone at the turn's end.** DSH keeps the effort in the request header, which every later request inherits, so a boost that only rewrote the request config would raise the Session for good. The turn's end submits a selection restoring what the boost displaced, through `ctx.get('sessionController')` rather than an injection, so a composition without that service still loads and the boost then lasts until the Session's next selection. A selection the user makes during the boosted turn cancels the undo instead of being overwritten by it.
+
+The boost is bound to the turn that **claims** the prompt rather than to the turn that was running when it was typed. That matters for a prompt queued mid-turn, and for one typed in the tenth of a second between a reply rendering and its `turn/end` landing: binding at insertion would have let the previous turn's end clear it, which is the bug the switcher-less smoke lane found.
 - **Default selection save.** The standard `session.selectModel` path also saves the selection as the profile default where DSH does so, so selecting Ultra can leave the top level as the saved default for new sessions. The saved value carries the effort but not the mode, so a new session can start at that level without Ultra's instruction. This is the switcher's shared selection path, not a separate Ultra path.
 - **The arm is in memory until the first request.** Selecting Ultra and reloading before sending a prompt loses the local cell. After the first request the logged system message restores it.
 - **Uninstall leaves history.** Removing the plugin stops new Ultra sections and removes the fifth cell, but an existing session's logged system prompt still contains the mode text; resuming that session shows the old instruction.
@@ -124,13 +126,16 @@ The cadence is Claude's too, from the attachment builder in the same bundle: the
 npm run typecheck
 npm test
 npm run smoke
+npm run smoke:noswitcher
 ```
 
-`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 266 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
+`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 285 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
 
 `npm run smoke` is the end-to-end lane, and the only one that proves the wiring rather than the units. It packs and installs both plugins into a throwaway `DSH_HOME` profile through the built CLI, points a fixture provider at a local OpenAI-compatible endpoint that records every request body, boots `dsh web` from the checkout, and drives Microsoft Edge through the real card. It asserts that the fifth Ultra tier exists, that selecting it routes `reasoning_effort: max` and carries the entry section, that a prompt containing `ultracode` at a lower tier carries the keyword section instead, and that the opt-in does not survive into the next turn. It needs the switcher beside this package (or `DSH_SWITCHER_TGZ` pointing at a packed archive), a built DSH checkout, and Microsoft Edge; evidence lands under `.runtime/browser-*`.
 
 A turn also fires a session-title call that carries neither the tools nor the effort, so the smoke selects the turn's request by its tool schemas.
+
+`npm run smoke:noswitcher` is the second lane, and it exists because this plugin's worst failure was a client boot audit failure that blanked the whole GUI. It installs this package **alone** and asserts the surface still loads, the tier card is genuinely absent, and the `ultracode` and `ultrathink` keywords still reach the model. Declaring `codexModelTiers` as an injection again makes this lane fail while the switcher lane still passes, which is exactly why it had to exist.
 
 `tests/decode-session.mjs` reads a session log and reduces it to the per-turn facts a verification cares about. A log is a concatenation of zstd frames, which neither `zstdDecompressSync` nor a stream decoder spans, so the boundaries are found from the frame magic; an undecoded slice is carried forward rather than dropped, which also absorbs a torn tail:
 
@@ -144,7 +149,9 @@ node tests/decode-session.mjs "$env:USERPROFILE/.dsh/sessions/<project>/<session
 dsh --profile web --patch ".runtime/no-switcher.overlay.yml" --no-open --port 0
 ```
 
-Published packages ship `lib/`, the patch, and the READMEs only; the suites, the smoke, and the evidence stay out of the archive.
+Published packages ship `lib/`, the patch, the READMEs, and the changelog; the suites, the smoke, and the evidence stay out of the archive.
+
+Every version's notes are in [CHANGELOG.md](CHANGELOG.md), and each one is also a GitHub release carrying the packed archive.
 
 ## License
 

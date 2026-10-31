@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.6.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.7.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。
@@ -109,7 +109,9 @@ Claude 的关键字家族里还有 `ultraplan` 与 `ultrareview`，本插件没�
 ## 已知限制与后续工作
 
 - **必须安装切换器。** `dsh-codex-effort-switcher` 必须在同一 profile 中。浏览器半通过 `ctx.get` 而非 `ctx.inject` 读取它的 `codexModelTiers` 服务，因为 pending 的 inject 会被客户端启动审计判为插件加载失败并让整个界面白屏；因此没有切换器的组合能正常加载，只是不贡献任何档位。
-- **`ultrathink` 的 boost 会在该轮结束时撤销。** DSH 把强度存在请求头里，之后的每个请求都会继承，所以只改写请求 config 的 boost 会把整个会话永久抬高。轮结束时插件会提交一次选择，把 boost 顶掉的原值还回去；这一步通过 `ctx.get('sessionController')` 而非注入获取，因此没有该服务的组合仍能加载，只是 boost 会持续到该会话下一次选择。用户在 boost 那一轮里自己做的选择会取消这次撤销，而不是被它覆盖。中途排队的 prompt 会在同一个 `turn/end` 丢掉 boost —— 这点与 `ultracode` 的 opt-in 不同，后者由认领该 prompt 的那一轮消费。
+- **`ultrathink` 的 boost 会在该轮结束时撤销。** DSH 把强度存在请求头里，之后的每个请求都会继承，所以只改写请求 config 的 boost 会把整个会话永久抬高。轮结束时插件会提交一次选择，把 boost 顶掉的原值还回去；这一步通过 `ctx.get('sessionController')` 而非注入获取，因此没有该服务的组合仍能加载，只是 boost 会持续到该会话下一次选择。用户在 boost 那一轮里自己做的选择会取消这次撤销，而不是被它覆盖。
+
+boost 绑定的是**认领**该 prompt 的那一轮，而不是输入它时正在跑的那一轮。这对中途排队的 prompt 很关键，对"回复刚渲染出来、`turn/end` 还没落盘"那零点几秒内输入的 prompt 同样关键：若在插入时就绑定，上一轮的结束会把它清掉 —— 这正是无切换器冒烟通道抓到的 bug。
 - **默认选择会被保存。** 标准 `session.selectModel` 路径同时会把该选择保存为 profile 默认值，因此选中 Ultra 可能把顶层强度留作新会话的默认。保存的是强度而非模式，所以新会话可能以该强度开始却没有 Ultra 的指令。这是切换器共享的选择路径，不是 Ultra 独有的路径。
 - **首次请求前 arm 只在内存里。** 选中 Ultra 后立刻刷新页面会丢掉本地格子；首次请求之后由已记录的 system message 还原。
 - **卸载会留下历史。** 移除插件会停止新的 Ultra section 并移除第五格，但既有会话已记录的 system prompt 仍含模式文本；恢复该会话会看到旧指令。
@@ -124,13 +126,16 @@ Claude 的关键字家族里还有 `ultraplan` 与 `ultrareview`，本插件没�
 npm run typecheck
 npm test
 npm run smoke
+npm run smoke:noswitcher
 ```
 
-`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 266 条断言。每条 spec 都有已记录的负向证明。
+`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 285 条断言。每条 spec 都有已记录的负向证明。
 
 `npm run smoke` 是端到端那条通道，也是唯一能证明"接线正确"而不只是"单元正确"的。它把两个插件通过构建好的 CLI 打包安装进一次性的 `DSH_HOME` profile，把夹具提供商指向一个会记录每个请求体的本地 OpenAI 兼容端点，从 checkout 启动 `dsh web`，并用 Microsoft Edge 真实操作卡片。它断言：第五档 Ultra 存在；选中它会把 `reasoning_effort: max` 发上线并带上进入文案；在较低档位下发含 `ultracode` 的 prompt 会改为带上关键字文案；以及该 opt-in 不会延续到下一轮。它需要切换器与本包并排（或用 `DSH_SWITCHER_TGZ` 指向已打包的归档）、构建好的 DSH checkout、以及 Microsoft Edge；证据落在 `.runtime/browser-*`。
 
 一轮对话还会触发一次会话标题请求，它既不带工具也不带强度，所以冒烟测试按工具 schema 来挑选该轮的主请求。
+
+`npm run smoke:noswitcher` 是第二条通道，它存在的理由是本插件最严重的一次故障：客户端启动审计失败导致整个界面白屏。它**只**安装本包，断言界面仍能加载、档位卡片确实不存在、`ultracode` 与 `ultrathink` 关键字仍能到达模型。若再把 `codexModelTiers` 声明为 inject，这条通道会挂而切换器那条仍通过 —— 这正是它必须存在的原因。
 
 `tests/decode-session.mjs` 读取会话日志，并把它归约成验证关心的逐轮事实。日志是 zstd 帧的拼接，`zstdDecompressSync` 与流式解码器都跨不过帧边界，因此边界由帧魔数定位；解不出的分片会被并入下一片而不是丢弃，这也顺带吸收了被截断的尾部：
 
@@ -144,7 +149,9 @@ node tests/decode-session.mjs "$env:USERPROFILE/.dsh/sessions/<project>/<session
 dsh --profile web --patch ".runtime/no-switcher.overlay.yml" --no-open --port 0
 ```
 
-发布包只含 `lib/`、patch 与两份 README；测试、冒烟与证据都不进归档。
+发布包只含 `lib/`、patch、两份 README 与 changelog；测试、冒烟与证据都不进归档。
+
+每个版本的说明在 [CHANGELOG.md](CHANGELOG.md)，同时也是一个附带打包归档的 GitHub release。
 
 ## License
 

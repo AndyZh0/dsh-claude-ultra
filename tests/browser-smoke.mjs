@@ -11,30 +11,16 @@
  * beside this package (or DSH_SWITCHER_TGZ pointing at a packed archive) and a
  * built checkout (pnpm run build in the repository root).
  */
-import { chromium } from 'playwright'
-import { createServer } from 'node:http'
-import { spawn, spawnSync } from 'node:child_process'
-import { once } from 'node:events'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { writeFile } from 'node:fs/promises'
 import assert from 'node:assert/strict'
+import {
+  bootWeb, cli, installPlugins, launchPage, makeRunDir, makeSend, pack, pickerOverlay,
+  profilePatch, promptText, root, startFixture, turnRequestOf,
+} from './smoke-harness.mjs'
 
-/** The whole reply the fixture streams back, and what the transcript shows. */
-const REPLY = 'claude ultra smoke passed'
-
-const root = resolve('../..')
-const cli = resolve(root, 'apps/cli/lib/bin.js')
-
-await mkdir('.runtime', { recursive: true })
-const run = await mkdtemp(resolve('.runtime/browser-'))
+const run = await makeRunDir('browser-')
 const environment = { ...process.env, DSH_HOME: resolve(run, 'home'), DSH_CLAUDE_ULTRA_TEST_KEY: 'local-fixture' }
-
-/** Pack one plugin directory and return the archive path. */
-function pack(directory) {
-  const packed = spawnSync('npm', ['pack', '--silent'], { cwd: directory, shell: true, encoding: 'utf8', timeout: 180000 })
-  assert.equal(packed.status, 0, 'npm pack failed in ' + directory + ': ' + packed.stderr)
-  return resolve(directory, packed.stdout.trim().split(/\r?\n/).pop())
-}
 
 const ourTarball = pack(resolve('.'))
 const switcherTarball = process.env.DSH_SWITCHER_TGZ ?? pack(resolve(root, 'plugins/codex-effort-switcher'))
@@ -42,95 +28,26 @@ const switcherTarball = process.env.DSH_SWITCHER_TGZ ?? pack(resolve(root, 'plug
 // The packed archive is what a profile installs, so pack rather than pointing
 // the profile at lib/. The switcher goes first: the bundle row order is what
 // publishes codexModelTiers before this plugin reads it.
-for (const tarball of [switcherTarball, ourTarball]) {
-  const installer = spawnSync(process.execPath, [cli, 'plugin', '--profile', 'web', 'add', tarball], {
-    cwd: root, windowsHide: true, env: environment, encoding: 'utf8', timeout: 180000,
-  })
-  await writeFile(resolve(run, 'install-' + tarball.split(/[\\/]/).pop() + '.log'), (installer.stdout ?? '') + (installer.stderr ?? ''))
-  assert.equal(installer.status, 0, 'plugin install failed for ' + tarball + ': ' + installer.stderr)
-}
-const installed = JSON.parse(await readFile(resolve(run, 'home/profiles/web/package.json'), 'utf8'))
-const bundles = installed.dsh.profile.bundles
+const bundles = await installPlugins({ cli, home: resolve(run, 'home'), tarballs: [switcherTarball, ourTarball], env: environment })
 assert.ok(bundles.includes('dsh-claude-ultra'), 'the bundle row was not added: ' + JSON.stringify(bundles))
 assert.ok(
   bundles.indexOf('dsh-codex-effort-switcher') < bundles.indexOf('dsh-claude-ultra'),
   'the switcher must compose before this plugin, which is what publishes codexModelTiers: ' + JSON.stringify(bundles),
 )
 
-/** Every request body the fixture received. */
-const requests = []
-const server = createServer(async (request, response) => {
-  let body = ''
-  for await (const chunk of request) body += chunk
-  if (request.url?.endsWith('/models')) {
-    response.setHeader('content-type', 'application/json')
-    response.end(JSON.stringify({ data: [{ id: 'fixture-model', name: 'Fixture Model' }] }))
-    return
-  }
-  requests.push(JSON.parse(body))
-  response.writeHead(200, { 'content-type': 'text/event-stream' })
-  for (const event of [
-    { choices: [{ delta: { role: 'assistant', content: REPLY }, index: 0, finish_reason: null }] },
-    { choices: [{ delta: {}, index: 0, finish_reason: 'stop' }], usage: { prompt_tokens: 2, completion_tokens: 3 } },
-  ]) response.write('data: ' + JSON.stringify(event) + '\n\n')
-  response.end('data: [DONE]\n\n')
-})
-server.listen(0, '127.0.0.1')
-await once(server, 'listening')
-const modelURL = 'http://127.0.0.1:' + server.address().port + '/v1'
+const fixture = await startFixture()
+const requests = fixture.requests
 
-await writeFile(resolve(run, 'home/profiles/web/cordis.patch.yml'), [
-  '- id: llm-pi-ai',
-  '  config:',
-  '    providers:',
-  '      fixture:',
-  '        displayName: Fixture',
-  '        api: openai-completions',
-  '        baseURL: ' + JSON.stringify(modelURL),
-  '        apiKeyEnv: DSH_CLAUDE_ULTRA_TEST_KEY',
-  '        models:',
-  '          - id: fixture-model',
-  '            name: Fixture Model',
-  '            reasoningEfforts:',
-  '              low: low',
-  '              high: high',
-  '              max: max',
-  '- id: ui-settings-models',
-  '  config:',
-  '    credentialOnboarding: false',
-  '- id: ui-settings-general',
-  '  config:',
-  "    welcomeNoticeVersion: '2026-09-28.1'",
-  '',
-].join('\n'))
+await writeFile(resolve(run, 'home/profiles/web/cordis.patch.yml'), profilePatch({ modelURL: fixture.url }))
 
-const child = spawn(process.execPath, [
-  cli, 'web',
-  '--patch', resolve(root, 'apps/web/tests/pin-browse-picker.overlay.yml'),
-  '--no-open', '--port', '0',
-], { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: environment })
+const host = await bootWeb({ cli, home: resolve(run, 'home'), patch: pickerOverlay, env: environment })
 
-let logs = ''
 let browser
 const errors = []
 try {
-  const url = await new Promise((resolveURL, reject) => {
-    const timeout = setTimeout(() => reject(new Error('DSH did not publish its URL within 120 seconds')), 120000)
-    const collect = (chunk) => {
-      logs += chunk.toString()
-      const match = logs.replace(/\x1b\[[0-9;]*m/g, '').match(/http:\/\/127\.0\.0\.1:\d+[^\s]*/)
-      if (match) { clearTimeout(timeout); resolveURL(match[0]) }
-    }
-    child.stdout.on('data', collect)
-    child.stderr.on('data', collect)
-    child.once('exit', code => { clearTimeout(timeout); reject(new Error('DSH exited ' + code)) })
-  })
-
-  browser = await chromium.launch({ channel: 'msedge', headless: true })
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'en-US' })
-  page.on('pageerror', error => errors.push(error.message))
-  page.on('console', (message) => { if (message.type() === 'error') errors.push('console: ' + message.text()) })
-  await page.goto(url)
+  const opened = await launchPage(host.url, errors)
+  browser = opened.browser
+  const page = opened.page
 
   const trigger = page.locator('.dsh-codex-model .cx-trigger')
   await trigger.waitFor({ timeout: 60000 })
@@ -155,34 +72,7 @@ try {
   assert.ok(levels.includes('Ultra'), 'the Ultra tier is missing from ' + JSON.stringify(levels))
   await page.screenshot({ path: resolve(run, 'tiers.png') })
 
-  const replies = () => page.locator('text="' + REPLY + '"').count()
-
-  /** Send one prompt through the composer and wait for the fixture's reply. */
-  const send = async (text) => {
-    const input = page.locator('[data-composer-card] textarea, [data-composer-card] [contenteditable="true"]').first()
-    const seenReplies = await replies()
-    const seenRequests = requests.length
-    await input.fill(text)
-    await input.press('Enter')
-    const deadline = Date.now() + 90000
-    while (requests.length === seenRequests && Date.now() < deadline) await page.waitForTimeout(200)
-    assert.ok(requests.length > seenRequests, 'the host sent no model request for ' + JSON.stringify(text))
-    // The transcript keeps earlier replies, so wait for one more than was there.
-    while (await replies() <= seenReplies && Date.now() < deadline) await page.waitForTimeout(200)
-    assert.ok(await replies() > seenReplies, 'the transcript never rendered the reply for ' + JSON.stringify(text))
-    return requests.slice(seenRequests)
-  }
-
-  /**
-   * The one request of a turn that carried the tool schemas.
-   *
-   * A turn also fires a session-title call, which carries neither the effort
-   * nor the system prompt, so selecting on the tools is what isolates the turn.
-   */
-  const turnRequestOf = (batch) => batch.find(body => Array.isArray(body.tools) && body.tools.length > 0)
-
-  /** Every message's text in one request body. */
-  const promptText = (body) => JSON.stringify(body.messages ?? [])
+  const send = makeSend({ page, requests })
 
   // Path 1: the tier. It must route the top effort and carry the entry section.
   await ultra.click()
@@ -238,7 +128,7 @@ try {
 } catch (error) {
   console.error(error.message)
   for (const entry of errors.slice(0, 4)) console.error('BROWSER: ' + entry.slice(0, 400))
-  console.error(logs.slice(-4000).replace(/token=[^\s]+/g, 'token=<redacted>'))
+  console.error(host.logs.slice(-4000).replace(/token=[^\s]+/g, 'token=<redacted>'))
   if (browser) {
     const page = browser.contexts()[0]?.pages()[0]
     if (page) {
@@ -260,15 +150,9 @@ try {
       ultrathink: JSON.stringify(body.messages ?? []).includes('requesting deeper reasoning on this turn'),
     })),
   }, null, 2) + '\n')
-  await writeFile(resolve(run, 'host.log'), logs)
+  await writeFile(resolve(run, 'host.log'), host.logs)
   await browser?.close()
-  if (child.exitCode === null) {
-    const closed = once(child, 'exit')
-    if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-    else child.kill('SIGTERM')
-    await closed
-  }
-  server.closeAllConnections()
-  await new Promise(resolveClose => server.close(resolveClose))
+  await host.stop()
+  await fixture.close()
   console.log('Evidence: ' + run)
 }

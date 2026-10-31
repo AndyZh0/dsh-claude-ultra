@@ -112,9 +112,12 @@ export function apply(ctx: ClaudeUltraContext): void {
       displaced.delete(sessionId)
     }
     // The boost is turn-scoped, like Claude's setTurnEffort, so it survives
-    // every step of the turn it was typed for and no further.
-    if (event.type === 'turn/end') {
-      boosts.clear(sessionId)
+    // every step of the turn it was typed for and no further. Only the turn it
+    // was bound to may end it: a prompt typed while the previous turn is still
+    // finishing is inserted before that turn's `turn/end`, which lands about a
+    // tenth of a second after the reply renders.
+    if (event.type === 'turn/end' && event.data?.turn !== undefined) {
+      boosts.release(sessionId, event.data.turn)
       const previous = displaced.get(sessionId)
       if (previous !== undefined) {
         displaced.delete(sessionId)
@@ -125,7 +128,7 @@ export function apply(ctx: ClaudeUltraContext): void {
 
   // The system prompt has already materialized the arm by the time this
   // listener runs; consume it so a later request cannot reuse a stale intent.
-  ctx.on('agent/request', async ({ agent }, next) => {
+  ctx.on('agent/request', async ({ agent, turn }, next) => {
     const config = await next()
     const sessionId = String(agent.session.id)
     const arm = arms.get(sessionId)
@@ -138,7 +141,7 @@ export function apply(ctx: ClaudeUltraContext): void {
     // Claude's ultrathink raises the turn's effort rather than switching a mode,
     // so it rewrites this request's config instead of going through a selection.
     // A route already at its top level is left alone.
-    if (!boosts.get(sessionId)) return config
+    if (!boosts.get(sessionId) || boosts.turnOf(sessionId) !== turn) return config
     try {
       const info = await ctx.llm.resolveModelInfo(config.provider, config.model)
       const top = mappedUltraEffort(info.reasoning?.efforts)

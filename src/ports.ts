@@ -16,6 +16,8 @@ export interface UltraSessionEvent {
     readonly message?: { readonly content?: readonly UltraContentBlock[] }
     /** Present on `user/message`; `user` marks a prompt the human typed. */
     readonly source?: { readonly kind?: string }
+    /** Present on `turn/end`. */
+    readonly turn?: number
   }
 }
 
@@ -199,13 +201,16 @@ export interface ClaudeUltraContext {
   on(
     event: 'agent/pre-step',
     listener: (
-      payload: { readonly agent: UltraAgent; readonly messages: readonly UltraUserMessage[] },
+      payload: { readonly agent: UltraAgent; readonly messages: readonly UltraUserMessage[]; readonly turn: number },
       next: () => Promise<unknown>,
     ) => Promise<unknown>,
   ): () => void
   on(
     event: 'agent/request',
-    listener: (payload: { readonly agent: UltraAgent }, next: () => Promise<UltraCallConfig>) => Promise<UltraCallConfig>,
+    listener: (
+      payload: { readonly agent: UltraAgent; readonly turn: number },
+      next: () => Promise<UltraCallConfig>,
+    ) => Promise<UltraCallConfig>,
   ): () => void
   on(event: 'agent/disposed', listener: (payload: { readonly agent: UltraAgent }) => void): () => void
   readonly logger: { warn(message: string): void }

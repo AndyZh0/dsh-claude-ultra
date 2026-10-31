@@ -305,8 +305,8 @@ function capture(options = {}) {
   assert.ok(Array.isArray(inserted), 'the capture registered no inbox listener')
   assert.equal(inserted.length, 1)
   const insert = (sessionId, message) => inserted[0]({ agent: agent(sessionId), message })
-  const preStep = async (sessionId, messages, next) => {
-    const results = ctx.emit('agent/pre-step', { agent: agent(sessionId), messages }, next)
+  const preStep = async (sessionId, messages, next, turn = 1) => {
+    const results = ctx.emit('agent/pre-step', { agent: agent(sessionId), messages, turn }, next)
     assert.equal(results.length, 1, 'the capture registered no pre-step listener')
     return await results[0]
   }
@@ -712,7 +712,7 @@ test('a turn boundary alone does not clear the opt-in', async () => {
   const { ctx, listener } = mount()
   const upstream = { sections: [] }
   insert(ctx, 'root', inboxMessage(['please ultracode this'], TYPED))
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   const { result } = await assemble(listener, upstream, { agent: agent('root') })
   assert.equal(result.sections.length, 1)
   assert.equal(result.sections[0].name, KEYWORD_SECTION)
@@ -825,11 +825,28 @@ test('with no mode, no keyword and no boost the assembly is the identical upstre
 const LEVELS = { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] } }
 const NO_MAX = { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }] } }
 
+/** The turn every boost test binds its prompt to. */
+const TURN = 1
+
 /** Run one agent/request with a fixed upstream config. */
-async function request(ctx, sessionId, config) {
-  const results = ctx.emit('agent/request', { agent: agent(sessionId) }, async () => config)
+async function request(ctx, sessionId, config, turn = TURN) {
+  const results = ctx.emit('agent/request', { agent: agent(sessionId), turn }, async () => config)
   assert.equal(results.length, 1, 'the plugin registered no agent/request listener')
   return await results[0]
+}
+
+/**
+ * Let the step that claims a typed prompt bind the boost, as agent/pre-step does.
+ * @param ctx - the mounted context.
+ * @param sessionId - session whose prompt was claimed.
+ * @param turn - the turn the claiming step belongs to.
+ * @param text - the prompt that was spliced into the inbox.
+ */
+async function claim(ctx, sessionId, turn = TURN, text = 'ultrathink') {
+  const message = inboxMessage([text], TYPED)
+  const results = ctx.emit('agent/pre-step', { agent: agent(sessionId), messages: [message], turn }, async () => 'upstream')
+  assert.equal(results.length, 1, 'the plugin registered no pre-step listener')
+  await results[0]
 }
 
 /** Arm one session through the plugin's own route. */
@@ -848,6 +865,7 @@ async function armSession(ctx, sessionId, payload) {
 test('a boost rewrites the request to the top advertised level', async () => {
   const { ctx } = mount({ modelInfo: LEVELS })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
   const result = await request(ctx, 'root', config)
   assert.deepEqual(result, { provider: 'acme', model: 'astra', reasoningEffort: 'max' })
@@ -858,6 +876,7 @@ test('a boost rewrites the request to the top advertised level', async () => {
 test('a boost without a max level rewrites to the highest advertised level', async () => {
   const { ctx } = mount({ modelInfo: NO_MAX })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
   assert.equal(result.reasoningEffort, 'high')
 })
@@ -865,6 +884,7 @@ test('a boost without a max level rewrites to the highest advertised level', asy
 test('a boost leaves a request already at the top level alone', async () => {
   const { ctx } = mount({ modelInfo: LEVELS })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'max' }
   assert.equal(await request(ctx, 'root', config), config)
 })
@@ -872,6 +892,7 @@ test('a boost leaves a request already at the top level alone', async () => {
 test('a boost leaves a model with no usable level alone', async () => {
   const { ctx } = mount({ modelInfo: { reasoning: { efforts: [{ id: 'off' }] } } })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
   assert.equal(await request(ctx, 'root', config), config)
 })
@@ -879,6 +900,7 @@ test('a boost leaves a model with no usable level alone', async () => {
 test('a boost leaves an unresolvable route alone and warns once', async () => {
   const { ctx } = mount({ modelInfoError: new Error('no route') })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
   assert.equal(await request(ctx, 'root', config), config)
   assert.equal(ctx.warnings.length, 1)
@@ -889,6 +911,7 @@ test('a boost leaves an unresolvable route alone and warns once', async () => {
 test('the boost is not consumed by a request', async () => {
   const { ctx } = mount({ modelInfo: LEVELS })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const first = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
   const second = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
   assert.equal(first.reasoningEffort, 'max')
@@ -896,10 +919,11 @@ test('the boost is not consumed by a request', async () => {
   assert.equal(ctx.modelInfoCalls.length, 2)
 })
 
-test('a turn boundary clears the boost', async () => {
+test('the turn a boost is bound to clears it', async () => {
   const { ctx } = mount({ modelInfo: LEVELS })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await claim(ctx, 'root')
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
   assert.equal(await request(ctx, 'root', config), config)
   assert.deepEqual(ctx.modelInfoCalls, [])
@@ -933,6 +957,7 @@ test('an armed request whose effort landed does not warn, even with a boost', as
   const { ctx } = mount({ modelInfo: LEVELS })
   await armSession(ctx, 'root', { provider: 'acme', model: 'astra', effort: 'max' })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const config = { provider: 'acme', model: 'astra', reasoningEffort: 'max' }
   assert.equal(await request(ctx, 'root', config), config)
   assert.deepEqual(ctx.warnings, [])
@@ -951,6 +976,7 @@ test('the arm check reads the config before the boost rewrites it', async () => 
   const { ctx } = mount({ modelInfo: LEVELS })
   await armSession(ctx, 'root', { provider: 'acme', model: 'astra', effort: 'max' })
   insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root')
   const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
   // The arm did not land as the session configured it, even though the boost
   // raises the request to the same level afterwards.
@@ -973,14 +999,15 @@ const BOOSTED = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
 async function boosted(options = {}, config = BOOSTED) {
   const mounted = mount({ modelInfo: LEVELS, ...options })
   insert(mounted.ctx, 'root', inboxMessage(['ultrathink'], TYPED))
-  const result = await request(mounted.ctx, 'root', config)
+  await claim(mounted.ctx, 'root', TURN)
+  const result = await request(mounted.ctx, 'root', config, TURN)
   return { ...mounted, result }
 }
 
 test('turn end puts the displaced selection back', async () => {
   const { ctx, result } = await boosted()
   assert.equal(result.reasoningEffort, 'max')
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [{ sessionId: 'root', provider: 'acme', model: 'astra', reasoningEffort: 'low' }])
 })
@@ -988,7 +1015,7 @@ test('turn end puts the displaced selection back', async () => {
 test('the displaced selection omits an effort the config never carried', async () => {
   const { ctx, result } = await boosted({}, { provider: 'acme', model: 'astra' })
   assert.equal(result.reasoningEffort, 'max')
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.equal(ctx.selectCalls.length, 1)
   assert.deepEqual(ctx.selectCalls[0], { sessionId: 'root', provider: 'acme', model: 'astra' })
@@ -998,21 +1025,21 @@ test('the displaced selection omits an effort the config never carried', async (
 test('a request already at the top level records no displacement', async () => {
   const { ctx, result } = await boosted({}, { provider: 'acme', model: 'astra', reasoningEffort: 'max' })
   assert.equal(result.reasoningEffort, 'max')
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
 
 test('a model with no usable level records no displacement', async () => {
   const { ctx } = await boosted({ modelInfo: { reasoning: { efforts: [{ id: 'off' }] } } })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
 
 test('an unresolvable route records no displacement', async () => {
   const { ctx } = await boosted({ modelInfoError: new Error('no route') })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
@@ -1020,21 +1047,21 @@ test('an unresolvable route records no displacement', async () => {
 test('an unboosted turn records no displacement', async () => {
   const { ctx } = mount({ modelInfo: LEVELS })
   await request(ctx, 'root', BOOSTED)
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
 
 test('a composition without the session controller is a silent no-op', async () => {
   const { ctx } = await boosted({ sessionController: undefined })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.warnings, [])
 })
 
 test('a session controller that does not serve selectModel is a silent no-op', async () => {
   const { ctx } = await boosted({ sessionController: {} })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.warnings, [])
 })
@@ -1045,7 +1072,7 @@ test('a rejected undo warns once and does not escape', async () => {
   process.on('unhandledRejection', onRejection)
   try {
     const { ctx } = await boosted({ selectModelError: new Error('undo refused') })
-    ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+    ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
     await flush()
     assert.equal(ctx.selectCalls.length, 1)
     assert.equal(ctx.warnings.length, 1)
@@ -1060,7 +1087,7 @@ test('a rejected undo warns once and does not escape', async () => {
 test('a model selection during the turn cancels the undo', async () => {
   const { ctx } = await boosted()
   ctx.emit('session/event', { id: 'root' }, { type: 'model/selection' })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
@@ -1068,35 +1095,38 @@ test('a model selection during the turn cancels the undo', async () => {
 test('disposing the agent cancels the undo', async () => {
   const { ctx } = await boosted()
   ctx.emit('agent/disposed', { agent: agent('root') })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
 
 test('the undo is submitted once for two turn ends', async () => {
   const { ctx } = await boosted()
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.equal(ctx.selectCalls.length, 1)
 })
 
 test('the undo belongs to the session that was boosted', async () => {
   const { ctx } = await boosted()
-  ctx.emit('session/event', { id: 'other' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'other' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.deepEqual(ctx.selectCalls, [])
 })
 
-test('turn end submits the undo and leaves the keyword opt-in standing', async () => {
+test('turn end submits the undo and leaves the keyword store to its own hook', async () => {
   const { ctx, listener } = mount({ modelInfo: LEVELS, states: { root: modeState('still', false, SPARSE_INTERVAL, 0) } })
   insert(ctx, 'root', inboxMessage(['ultracode and ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN, 'ultracode and ultrathink')
   await request(ctx, 'root', BOOSTED)
-  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
   await flush()
   assert.equal(ctx.selectCalls.length, 1)
+  // The claiming step already consumed the opt-in, and turn end must not
+  // resurrect it: the two stores have different lifetimes.
   const { result } = await assemble(listener, { sections: [] }, { agent: agent('root') })
-  assert.deepEqual(result.sections.map(section => section.name), [SECTION, KEYWORD_SECTION])
+  assert.deepEqual(result.sections.map(section => section.name), [SECTION])
 })
 
 
@@ -1121,6 +1151,8 @@ function typedPrompt(text = 'a prompt') {
 function foldFrom(state, ...events) {
   return events.reduce((current, event) => applyClaudeUltraModeProjection(current, event), state)
 }
+
+
 
 /** Fold a run of events into a fresh projection, as the Session log would. */
 function fold(...events) {
@@ -1190,3 +1222,186 @@ test('a subagent of an active parent still starts with the full entry', () => {
   assert.equal(resolveClaudeUltraReminder(ctx, child, createClaudeUltraArmStore()), 'full')
 })
 
+// --- the boost's turn binding -----------------------------------------------
+//
+// The boost is bound to the turn that claimed its prompt, not the turn that was
+// running when it was typed. A prompt typed while the previous turn is still
+// finishing is inserted before that turn's turn/end, which lands about a tenth
+// of a second after the reply renders.
+
+test('a fresh boost entry is unbound', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  assert.equal(boosts.get('session-1'), true)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+})
+
+test('bind records the claiming turn', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.bind('session-1', 4)
+  assert.equal(boosts.turnOf('session-1'), 4)
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('bind on a session with no entry is a no-op', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.bind('session-1', 4)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('release clears only the turn the entry is bound to', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.bind('session-1', 2)
+  boosts.release('session-1', 1)
+  assert.equal(boosts.get('session-1'), true)
+  assert.equal(boosts.turnOf('session-1'), 2)
+  boosts.release('session-1', 2)
+  assert.equal(boosts.get('session-1'), false)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+})
+
+test('release on an unbound entry clears nothing', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.release('session-1', 1)
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('set unbinds a previously bound entry', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.bind('session-1', 3)
+  boosts.set('session-1', true)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+  boosts.release('session-1', 3)
+  assert.equal(boosts.get('session-1'), true, 'a turn the entry is no longer bound to must not release it')
+})
+
+// --- binding happens on the claim, not on the insertion ---------------------
+
+test('a step that claimed a typed prompt binds its turn', async () => {
+  const { boosts, insert, preStep } = capture()
+  insert('session-1', inboxMessage(['ultrathink'], TYPED))
+  assert.equal(boosts.turnOf('session-1'), undefined)
+  await preStep('session-1', [inboxMessage(['ultrathink'], TYPED)], async () => 'upstream', 7)
+  assert.equal(boosts.turnOf('session-1'), 7)
+})
+
+test('a step whose messages are all runtime context binds nothing', async () => {
+  const { boosts, insert, preStep } = capture()
+  insert('session-1', inboxMessage(['ultrathink'], TYPED))
+  await preStep('session-1', [inboxMessage(['context'], { kind: 'runtime-context' })], async () => 'upstream', 7)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+})
+
+test('a step with no messages binds nothing', async () => {
+  const { boosts, insert, preStep } = capture()
+  insert('session-1', inboxMessage(['ultrathink'], TYPED))
+  await preStep('session-1', [], async () => 'upstream', 7)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+})
+
+test('a claiming step for a session with no entry binds nothing', async () => {
+  const { boosts, preStep } = capture()
+  await preStep('session-1', [inboxMessage(['ultrathink'], TYPED)], async () => 'upstream', 7)
+  assert.equal(boosts.turnOf('session-1'), undefined)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('a claiming step whose prompt carried no boost records none', async () => {
+  const { boosts, insert, preStep } = capture()
+  insert('session-1', inboxMessage(['nothing here'], TYPED))
+  await preStep('session-1', [inboxMessage(['nothing here'], TYPED)], async () => 'upstream', 7)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+// --- the request gate -------------------------------------------------------
+
+test('an unbound boost is not applied and does not resolve the model', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config, TURN), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('a boost bound to another turn is not applied', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN + 1)
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config, TURN), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('a boost bound to this turn is applied', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN)
+  const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' }, TURN)
+  assert.equal(result.reasoningEffort, 'max')
+})
+
+// --- the race the binding fixes ---------------------------------------------
+
+test('a turn end for another turn leaves the boost standing', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN + 1)
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
+  const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' }, TURN + 1)
+  assert.equal(result.reasoningEffort, 'max')
+})
+
+test('a turn end for the bound turn clears the boost', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN + 1)
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN + 1 } })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config, TURN + 1), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('a prompt queued during a turn boosts only the turn that claims it', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  // The user types the ultrathink prompt while turn 1 is still running.
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const running = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', running, TURN), running)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+  // Turn 1 claimed no prompt, so its end releases nothing.
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end', data: { turn: TURN } })
+  // Turn 2 claims the queued prompt, and only its request is boosted.
+  await claim(ctx, 'root', TURN + 1)
+  const boosted = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' }, TURN + 1)
+  assert.equal(boosted.reasoningEffort, 'max')
+})
+
+test('a turn end with no logged turn clears nothing', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  // An entry nothing has claimed yet is the one a turn-less turn/end could
+  // wrongly clear, because its bound turn is itself undefined.
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await claim(ctx, 'root', TURN)
+  const unbound = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' }, TURN)
+  assert.equal(unbound.reasoningEffort, 'max')
+  // A bound entry is left alone too.
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  const bound = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' }, TURN)
+  assert.equal(bound.reasoningEffort, 'max')
+})
+
+test('disposing the agent clears a bound boost', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  await claim(ctx, 'root', TURN)
+  ctx.emit('agent/disposed', { agent: agent('root') })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config, TURN), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
