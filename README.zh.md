@@ -118,9 +118,20 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 ```powershell
 npm run typecheck
 npm test
+npm run smoke
 ```
 
-`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、arm 路由的每个分支、浏览器档位跑 95 条断言。每条 spec 都有已记录的负向证明。
+`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 184 条断言。每条 spec 都有已记录的负向证明。
+
+`npm run smoke` 是端到端那条通道，也是唯一能证明"接线正确"而不只是"单元正确"的。它把两个插件通过构建好的 CLI 打包安装进一次性的 `DSH_HOME` profile，把夹具提供商指向一个会记录每个请求体的本地 OpenAI 兼容端点，从 checkout 启动 `dsh web`，并用 Microsoft Edge 真实操作卡片。它断言：第五档 Ultra 存在；选中它会把 `reasoning_effort: max` 发上线并带上进入文案；在较低档位下发含 `ultracode` 的 prompt 会改为带上关键字文案；以及该 opt-in 不会延续到下一轮。它需要切换器与本包并排（或用 `DSH_SWITCHER_TGZ` 指向已打包的归档）、构建好的 DSH checkout、以及 Microsoft Edge；证据落在 `.runtime/browser-*`。
+
+一轮对话还会触发一次会话标题请求，它既不带工具也不带强度，所以冒烟测试按工具 schema 来挑选该轮的主请求。
+
+`tests/decode-session.mjs` 读取会话日志，并把它归约成验证关心的逐轮事实。日志是 zstd 帧的拼接，`zstdDecompressSync` 与流式解码器都跨不过帧边界，因此边界由帧魔数定位；解不出的分片会被并入下一片而不是丢弃，这也顺带吸收了被截断的尾部：
+
+```powershell
+node tests/decode-session.mjs "$env:USERPROFILE/.dsh/sessions/<project>/<session>/session.v4.jsonl.zstd"
+```
 
 `.runtime/no-switcher.overlay.yml` 是一份禁用切换器的 `--patch` 覆盖层，用于复现降级路径：
 
@@ -128,7 +139,7 @@ npm test
 dsh --profile web --patch ".runtime/no-switcher.overlay.yml" --no-open --port 0
 ```
 
-发布包不含开发依赖与证据文件。
+发布包只含 `lib/`、patch 与两份 README；测试、冒烟与证据都不进归档。
 
 ## License
 

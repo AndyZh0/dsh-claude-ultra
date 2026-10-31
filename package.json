@@ -1,6 +1,6 @@
 {
   "name": "dsh-claude-ultra",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Claude-style Ultra mode for DSH: the top reasoning effort plus standing multi-agent orchestration",
   "type": "module",
   "license": "MIT",
@@ -40,6 +40,7 @@
     "typecheck": "tsc --noEmit",
     "pretest": "node scripts/build.mjs && node scripts/build-test.mjs",
     "test": "node --test \"tests/*.spec.mjs\"",
+    "smoke": "node tests/browser-smoke.mjs",
     "prepack": "node scripts/build.mjs"
   },
   "dependencies": {

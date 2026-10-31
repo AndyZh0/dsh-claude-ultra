@@ -118,9 +118,20 @@ The exit text's second sentence restates the opt-in rule from Claude's Workflow 
 ```powershell
 npm run typecheck
 npm test
+npm run smoke
 ```
 
-`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 95 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
+`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 184 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
+
+`npm run smoke` is the end-to-end lane, and the only one that proves the wiring rather than the units. It packs and installs both plugins into a throwaway `DSH_HOME` profile through the built CLI, points a fixture provider at a local OpenAI-compatible endpoint that records every request body, boots `dsh web` from the checkout, and drives Microsoft Edge through the real card. It asserts that the fifth Ultra tier exists, that selecting it routes `reasoning_effort: max` and carries the entry section, that a prompt containing `ultracode` at a lower tier carries the keyword section instead, and that the opt-in does not survive into the next turn. It needs the switcher beside this package (or `DSH_SWITCHER_TGZ` pointing at a packed archive), a built DSH checkout, and Microsoft Edge; evidence lands under `.runtime/browser-*`.
+
+A turn also fires a session-title call that carries neither the tools nor the effort, so the smoke selects the turn's request by its tool schemas.
+
+`tests/decode-session.mjs` reads a session log and reduces it to the per-turn facts a verification cares about. A log is a concatenation of zstd frames, which neither `zstdDecompressSync` nor a stream decoder spans, so the boundaries are found from the frame magic; an undecoded slice is carried forward rather than dropped, which also absorbs a torn tail:
+
+```powershell
+node tests/decode-session.mjs "$env:USERPROFILE/.dsh/sessions/<project>/<session>/session.v4.jsonl.zstd"
+```
 
 `.runtime/no-switcher.overlay.yml` is a `--patch` overlay that disables the switcher, for reproducing the degradation path:
 
@@ -128,7 +139,7 @@ npm test
 dsh --profile web --patch ".runtime/no-switcher.overlay.yml" --no-open --port 0
 ```
 
-Published packages exclude development dependencies and evidence.
+Published packages ship `lib/`, the patch, and the READMEs only; the suites, the smoke, and the evidence stay out of the archive.
 
 ## License
 
