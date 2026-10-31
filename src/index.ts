@@ -9,10 +9,12 @@
  * logged system message plus model-selection events, so the mode survives
  * reload, restart, and resume without a new Session event type.
  */
-import type { ClaudeUltraContext } from './ports.ts'
+import type { ClaudeUltraContext, UltraSessionController } from './ports.ts'
 import { createClaudeUltraArmStore } from './arms.ts'
+import { createClaudeUltraBoostStore } from './boost-store.ts'
 import { registerClaudeUltraKeywordCapture, registerClaudeUltraSystemPrompt } from './context.ts'
 import { createClaudeUltraKeywordStore } from './keyword-store.ts'
+import { mappedUltraEffort } from './mode.ts'
 import { claudeUltraModeProjection } from './projection.ts'
 import { registerClaudeUltraArmRoute } from './route.ts'
 
@@ -27,7 +29,9 @@ export type { UltraArmRecord, UltraArmStore } from './arms.ts'
 export { registerClaudeUltraKeywordCapture, resolveClaudeUltraReminder } from './context.ts'
 export { createClaudeUltraKeywordStore } from './keyword-store.ts'
 export type { UltraKeywordStore } from './keyword-store.ts'
-export { textOfBlocks } from './keyword.ts'
+export { createClaudeUltraBoostStore } from './boost-store.ts'
+export type { UltraBoostStore } from './boost-store.ts'
+export { hasUltrathinkKeyword, textOfBlocks } from './keyword.ts'
 export { mappedUltraEffort } from './mode.ts'
 export type { UltraEffortCandidate } from './mode.ts'
 export { applyClaudeUltraModeProjection, claudeUltraModeProjection, EMPTY_CLAUDE_ULTRA_MODE_STATE } from './projection.ts'
@@ -40,6 +44,7 @@ export {
   CLAUDE_ULTRA_KEYWORD_SECTION,
   CLAUDE_ULTRA_PROJECTION_KEY,
   CLAUDE_ULTRA_SYSTEM_SECTION,
+  CLAUDE_ULTRA_ULTRATHINK_SECTION,
 } from './protocol.ts'
 export { findUltraKeyword, hasUltraKeyword } from './keyword.ts'
 export type { UltraKeywordMatch } from './keyword.ts'
@@ -58,12 +63,40 @@ export {
  * Mount the Ultra mode.
  * @param ctx - Host context carrying the required services.
  */
+/**
+ * Put a Session back on the selection an ultrathink turn displaced.
+ *
+ * The Session business API is read through \`ctx.get\` rather than injected: a
+ * composition without it still loads, and a boost then lasts until the Session's
+ * next selection, which is all the request header alone can express.
+ * @param ctx - Host context.
+ * @param sessionId - Session whose turn just ended.
+ * @param previous - selection the boosted request displaced.
+ */
+async function restoreDisplacedSelection(
+  ctx: ClaudeUltraContext,
+  sessionId: string,
+  previous: { provider: string; model: string; reasoningEffort?: string },
+): Promise<void> {
+  const controller = ctx.get('sessionController') as UltraSessionController | undefined
+  if (typeof controller?.selectModel !== 'function') return
+  try {
+    await controller.selectModel({ sessionId, ...previous })
+  } catch (error) {
+    ctx.logger.warn('dsh-claude-ultra: the ultrathink boost was not undone: ' + String(error))
+  }
+}
+
 export function apply(ctx: ClaudeUltraContext): void {
   const arms = createClaudeUltraArmStore()
   const keywords = createClaudeUltraKeywordStore()
+  const boosts = createClaudeUltraBoostStore()
+  // The selection each boosted turn displaced, keyed by Session, so the boost
+  // can be undone once that turn ends.
+  const displaced = new Map<string, { provider: string; model: string; reasoningEffort?: string }>()
   ctx.effect(() => ctx.sessionProjections.register(claudeUltraModeProjection), 'dsh-claude-ultra: projection')
-  ctx.effect(() => registerClaudeUltraSystemPrompt(ctx, arms, keywords), 'dsh-claude-ultra: system prompt')
-  ctx.effect(() => registerClaudeUltraKeywordCapture(ctx, keywords), 'dsh-claude-ultra: keyword capture')
+  ctx.effect(() => registerClaudeUltraSystemPrompt(ctx, arms, keywords, boosts), 'dsh-claude-ultra: system prompt')
+  ctx.effect(() => registerClaudeUltraKeywordCapture(ctx, keywords, boosts), 'dsh-claude-ultra: keyword capture')
   // The Fetch registration already rides the caller's fiber, so it needs no
   // second disposer here.
   registerClaudeUltraArmRoute(ctx, arms)
@@ -72,7 +105,22 @@ export function apply(ctx: ClaudeUltraContext): void {
   // exact selection that the browser just submitted, which is why its own
   // model/selection event (before the arm) and any later one both clear first.
   ctx.on('session/event', (session, event) => {
-    if (event.type === 'model/selection') arms.clear(String(session.id))
+    const sessionId = String(session.id)
+    if (event.type === 'model/selection') {
+      arms.clear(sessionId)
+      // A selection the user made outranks undoing the boost: leave it alone.
+      displaced.delete(sessionId)
+    }
+    // The boost is turn-scoped, like Claude's setTurnEffort, so it survives
+    // every step of the turn it was typed for and no further.
+    if (event.type === 'turn/end') {
+      boosts.clear(sessionId)
+      const previous = displaced.get(sessionId)
+      if (previous !== undefined) {
+        displaced.delete(sessionId)
+        void restoreDisplacedSelection(ctx, sessionId, previous)
+      }
+    }
   })
 
   // The system prompt has already materialized the arm by the time this
@@ -87,12 +135,36 @@ export function apply(ctx: ClaudeUltraContext): void {
       }
       arms.clear(sessionId)
     }
-    return config
+    // Claude's ultrathink raises the turn's effort rather than switching a mode,
+    // so it rewrites this request's config instead of going through a selection.
+    // A route already at its top level is left alone.
+    if (!boosts.get(sessionId)) return config
+    try {
+      const info = await ctx.llm.resolveModelInfo(config.provider, config.model)
+      const top = mappedUltraEffort(info.reasoning?.efforts)
+      if (top === undefined || top === String(config.reasoningEffort)) return config
+      // DSH keeps the effort in the request header, which every later request
+      // inherits, so a boost that only rewrote this config would silently raise
+      // the Session for good. Remember what it displaced so turn end can undo it.
+      displaced.set(sessionId, {
+        provider: config.provider,
+        model: config.model,
+        ...(config.reasoningEffort === undefined ? {} : { reasoningEffort: String(config.reasoningEffort) }),
+      })
+      return { ...config, reasoningEffort: top }
+    } catch (error) {
+      // A route this plugin cannot resolve is the selection path's problem, not
+      // the boost's; leave the request as the session configured it.
+      ctx.logger.warn('dsh-claude-ultra: ultrathink could not resolve "' + config.provider + '/' + config.model + '": ' + String(error))
+      return config
+    }
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
     const sessionId = String(agent.session.id)
     arms.clear(sessionId)
     keywords.clear(sessionId)
+    boosts.clear(sessionId)
+    displaced.delete(sessionId)
   })
 }

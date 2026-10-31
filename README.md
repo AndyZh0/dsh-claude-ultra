@@ -34,7 +34,7 @@ Build the package inside this directory; development dependencies and artifacts 
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.2.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.4.tgz"
 ```
 
 Install into the profile you actually use. `dsh plugin add` appends the bundle row and runs pnpm inside the profile directory. A profile composes its bundle rows at boot, so restart the app afterwards; `patchReload: live` reloads patch and config edits, not a new bundle row.
@@ -50,7 +50,7 @@ Click the model chip, choose a model that advertises a reasoning effort, and cli
 
 The next model request carries the mapped effort and a system-prompt section holding Claude's ultracode instruction plus the DSH agent-team usage notes. The mode stays active for later requests and for child agents. Choosing any lower level, in this card or through `/model`, makes the next assembly materialize Claude's exit text instead.
 
-A prompt that contains the whole word `ultracode` opts that turn into orchestration even when the tier is not selected, which is Claude's keyword trigger. The matcher is Claude's: a prompt that starts with a slash command is ignored, as is a keyword inside quotes, backticks, brackets or braces, and one glued to a path separator or a file extension. That turn receives Claude's keyword reminder in its own section, beside the standing one when the tier is active.
+A prompt that contains the whole word `ultracode` opts that turn into orchestration even when the tier is not selected, which is Claude's keyword trigger. A prompt that contains `ultrathink` instead raises that turn's effort to the model's top level without moving the tier. The matcher is Claude's: a prompt that starts with a slash command is ignored, as is a keyword inside quotes, backticks, brackets or braces, and one glued to a path separator or a file extension. Each keyword contributes its own section, beside the standing one when the tier is active.
 
 The mode is durable: it is folded from the logged `system/message` into the `claudeUltraMode` session projection, so a reload or a resume restores the fifth cell without a new request.
 
@@ -87,7 +87,7 @@ Verbatim, with one substitution: DSH has no Workflow tool, so `the Workflow tool
 | `ultra_effort_enter` (sparse) | Ultracode is still on — use the 'subagent' and 'subagent_fork' tools; see the Ultracode section of the DSH agent-team usage notes below. |
 | `ultra_effort_exit` | Ultracode is off — the standard opt-in rule for multi-agent delegation applies again. Only delegate when the user has explicitly asked for sub-agents, delegation, or parallel agent work; a task that would merely benefit from parallelism does not count. |
 | `workflow_keyword_request` | The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the 'subagent' and 'subagent_fork' tools to fulfill the request. |
-| `ultrathink_effort` | Not emitted. Pinned in `src/prompts.ts`; it raises one turn's effort rather than switching a mode, and this plugin's effort entry point is the slider. |
+| `ultrathink_effort` | The user included the keyword "ultrathink", requesting deeper reasoning on this turn. Reason as thoroughly as the task warrants. |
 
 The exit text's second sentence restates the opt-in rule from Claude's Workflow tool description (`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`), which is the rule the first sentence refers to.
 
@@ -104,7 +104,7 @@ The exit text's second sentence restates the opt-in rule from Claude's Workflow 
 
 - **The switcher is required.** `dsh-codex-effort-switcher` must be in the same profile. The client half reads its `codexModelTiers` service through `ctx.get` rather than `ctx.inject`, because a pending inject is reported by the client boot audit as a failed plugin load and blanks the whole surface; a composition without the switcher therefore loads normally and simply contributes no tier.
 - **Reminder cadence.** Claude emits the entry reminder on the first turn and then a sparse one every 10 user turns (`Uxr()`), and the exit reminder once. Here the entry reminder is re-emitted on every assembly (full first, then the still-on text) and the exit text is re-emitted while the mode is off. Claude's reminders are message attachments, so repeating them would grow its transcript; this section is rebuilt into each request's system prompt, where repeating costs no context. The text is Claude's; the frequency is the DSH-native equivalent.
-- **The `ultrathink` keyword is not wired.** Claude raises one turn to `xhigh` when its prompt contains `ultrathink`. That is a per-turn effort override rather than a mode, and this plugin's effort entry point is the slider; the text is pinned in `src/prompts.ts`. The `ultracode` keyword is wired, and its matcher is a port of Claude's own.
+- **The `ultrathink` boost is undone at the turn's end.** DSH keeps the effort in the request header, which every later request inherits, so a boost that only rewrote the request config would raise the Session for good. The turn's end submits a selection restoring what the boost displaced, through `ctx.get('sessionController')` rather than an injection, so a composition without that service still loads and the boost then lasts until the Session's next selection. A selection the user makes during the boosted turn cancels the undo instead of being overwritten by it, and a prompt queued mid-turn loses its boost to the same `turn/end` — unlike the `ultracode` opt-in, which the turn that claims the prompt consumes.
 - **Default selection save.** The standard `session.selectModel` path also saves the selection as the profile default where DSH does so, so selecting Ultra can leave the top level as the saved default for new sessions. The saved value carries the effort but not the mode, so a new session can start at that level without Ultra's instruction. This is the switcher's shared selection path, not a separate Ultra path.
 - **The arm is in memory until the first request.** Selecting Ultra and reloading before sending a prompt loses the local cell. After the first request the logged system message restores it.
 - **Uninstall leaves history.** Removing the plugin stops new Ultra sections and removes the fifth cell, but an existing session's logged system prompt still contains the mode text; resuming that session shows the old instruction.

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { findUltraKeyword, hasUltraKeyword, textOfBlocks } from '../lib/index.js'
+import { findUltraKeyword, hasUltrathinkKeyword, hasUltraKeyword, textOfBlocks } from '../lib/index.js'
 
 /** The single accepted occurrence of a one-match prompt. */
 function only(text, word = 'ultracode') {
@@ -155,4 +155,41 @@ test('textOfBlocks tolerates a message with no blocks', () => {
 test('textOfBlocks output is what the matcher reads', () => {
   const blocks = [{ type: 'text', text: 'please ultra' }, { type: 'text', text: 'code this' }]
   assert.equal(hasUltraKeyword(textOfBlocks(blocks)), true)
+})
+
+// --- the ultrathink keyword -------------------------------------------------
+
+test('ultrathink is matched by the same rules as ultracode', () => {
+  assert.equal(hasUltrathinkKeyword('ultrathink'), true)
+  assert.equal(hasUltrathinkKeyword('UltraThink'), true)
+  assert.equal(hasUltrathinkKeyword('please ultrathink about this'), true)
+  assert.equal(hasUltrathinkKeyword('just a question'), false)
+})
+
+test('the ultrathink offsets index the matched text', () => {
+  const text = 'say ultrathink now'
+  const matches = findUltraKeyword(text, 'ultrathink')
+  assert.equal(matches.length, 1)
+  assert.equal(text.slice(matches[0].start, matches[0].end), 'ultrathink')
+  assert.equal(matches[0].word, 'ultrathink')
+})
+
+test('a delimited or slash-prefixed ultrathink is rejected', () => {
+  const rejected = ['\u0060ultrathink\u0060', '"ultrathink"', "'ultrathink'", '<ultrathink>', '{ultrathink}', '[ultrathink]', '(ultrathink)', '/ultrathink', 'please /ultrathink']
+  for (const text of rejected) {
+    assert.equal(hasUltrathinkKeyword(text), false, JSON.stringify(text))
+  }
+})
+
+test('an ultrathink glued to a path or name character is rejected', () => {
+  for (const text of ['ultrathink.js', 'ultrathinks', 'xultrathink', 'ultrathink?', '-ultrathink', 'ultrathink/']) {
+    assert.equal(hasUltrathinkKeyword(text), false, JSON.stringify(text))
+  }
+})
+
+test('the two keywords do not trigger each other', () => {
+  assert.equal(hasUltraKeyword('ultrathink'), false)
+  assert.equal(hasUltrathinkKeyword('ultracode'), false)
+  assert.equal(hasUltraKeyword('ultracode and ultrathink'), true)
+  assert.equal(hasUltrathinkKeyword('ultracode and ultrathink'), true)
 })

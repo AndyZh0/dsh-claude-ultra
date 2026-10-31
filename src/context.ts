@@ -7,13 +7,26 @@ import type {
   UltraSession,
   UltraUserMessage,
 } from './ports.ts'
-import { hasUltraKeyword, textOfBlocks } from './keyword.ts'
+import { hasUltrathinkKeyword, hasUltraKeyword, textOfBlocks } from './keyword.ts'
 import type { UltraKeywordStore } from './keyword-store.ts'
+import type { UltraBoostStore } from './boost-store.ts'
 import type { UltraArmRecord, UltraArmStore } from './arms.ts'
-import { CLAUDE_ULTRA_KEYWORD_SECTION, CLAUDE_ULTRA_PROJECTION_KEY, CLAUDE_ULTRA_SYSTEM_SECTION } from './protocol.ts'
+import {
+  CLAUDE_ULTRA_KEYWORD_SECTION,
+  CLAUDE_ULTRA_PROJECTION_KEY,
+  CLAUDE_ULTRA_SYSTEM_SECTION,
+  CLAUDE_ULTRA_ULTRATHINK_SECTION,
+} from './protocol.ts'
 import type { ClaudeUltraModeState, UltraReminder } from './projection.ts'
 import { EMPTY_CLAUDE_ULTRA_MODE_STATE } from './projection.ts'
-import { ULTRA_ENTER_FULL, ULTRA_ENTER_STILL, ULTRA_EXIT, ULTRA_KEYWORD_REQUEST, usageHintFor } from './prompts.ts'
+import {
+  ULTRATHINK_EFFORT,
+  ULTRA_ENTER_FULL,
+  ULTRA_ENTER_STILL,
+  ULTRA_EXIT,
+  ULTRA_KEYWORD_REQUEST,
+  usageHintFor,
+} from './prompts.ts'
 
 /**
  * Read one Session's Ultra projection.
@@ -116,14 +129,21 @@ function reminderText(reminder: UltraReminder): string {
  * \`inbox.claim\` and \`systemPrompt.assemble\` run before the \`agent/pre-step\`
  * waterfall, so a prompt inserted before the turn is visible to its first
  * assembly, and the claim — which would be too early — is not what clears it.
+ * The ultrathink boost is read from the same prompt. It is consumed later —
+ * \`agent/request\` — and cleared at the turn's end, so it covers every step of
+ * the turn rather than only its first request.
  * @param ctx - Host context carrying the agent dispatch.
  * @param keywords - per-Session keyword store.
+ * @param boosts - per-Session ultrathink store.
  * @returns the disposer removing both listeners.
  */
-export function registerClaudeUltraKeywordCapture(ctx: ClaudeUltraContext, keywords: UltraKeywordStore): () => void {
+export function registerClaudeUltraKeywordCapture(ctx: ClaudeUltraContext, keywords: UltraKeywordStore, boosts: UltraBoostStore): () => void {
   const offInserted = ctx.on('agent/inbox/inserted', ({ agent, message }: { agent: UltraAgent; message: UltraUserMessage }) => {
     if (message.source?.kind !== 'user') return
-    keywords.set(String(agent.session.id), hasUltraKeyword(textOfBlocks(message.content)))
+    const text = textOfBlocks(message.content)
+    const sessionId = String(agent.session.id)
+    keywords.set(sessionId, hasUltraKeyword(text))
+    boosts.set(sessionId, hasUltrathinkKeyword(text))
   })
   const offPreStep = ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
     const consumed = messages.some((message: UltraUserMessage) => message.source?.kind === 'user')
@@ -147,9 +167,16 @@ export function registerClaudeUltraKeywordCapture(ctx: ClaudeUltraContext, keywo
  * system message that the durable projection folds back into the tier state.
  * @param ctx - Host context carrying the system-prompt registry.
  * @param arms - pre-request arm store.
+ * @param keywords - per-Session keyword store.
+ * @param boosts - per-Session ultrathink store.
  * @returns the disposer removing the contribution.
  */
-export function registerClaudeUltraSystemPrompt(ctx: ClaudeUltraContext, arms: UltraArmStore, keywords: UltraKeywordStore): () => void {
+export function registerClaudeUltraSystemPrompt(
+  ctx: ClaudeUltraContext,
+  arms: UltraArmStore,
+  keywords: UltraKeywordStore,
+  boosts: UltraBoostStore,
+): () => void {
   return ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const result = await next()
     const agent = context.agent
@@ -166,6 +193,10 @@ export function registerClaudeUltraSystemPrompt(ctx: ClaudeUltraContext, arms: U
     // so this rides its own section rather than replacing it.
     if (keywords.get(String(agent.session.id))) {
       sections.push({ name: CLAUDE_ULTRA_KEYWORD_SECTION, text: ULTRA_KEYWORD_REQUEST })
+    }
+    // Claude's ultrathink is a per-turn effort raise, announced on its own.
+    if (boosts.get(String(agent.session.id))) {
+      sections.push({ name: CLAUDE_ULTRA_ULTRATHINK_SECTION, text: ULTRATHINK_EFFORT })
     }
     return sections.length === result.sections.length ? result : { ...result, sections }
   })

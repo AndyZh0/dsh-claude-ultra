@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.2.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.4.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。
@@ -50,7 +50,7 @@ dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.2.tgz"
 
 下一次模型请求会携带映射后的强度，并在系统提示词里带上一段：Claude 的 ultracode 指令 + DSH 智能体团队用法说明。该模式对后续请求与子智能体持续生效。选任一更低档位（在本卡片或 `/model` 里）会让下一次组装改为materialize Claude 的退出文案。
 
-prompt 里出现整词 `ultracode` 时，即使没有选中该档位，那一轮也会被纳入编排 —— 这就是 Claude 的关键字触发器。匹配器就是 Claude 的那个：以斜杠指令开头的 prompt 会被忽略，引号、反引号、括号内的关键字同样被忽略，紧贴路径分隔符或文件扩展名的也不算。那一轮会单独拿到 Claude 的关键字提醒；档位激活时，它与常驻提醒并存。
+prompt 里出现整词 `ultracode` 时，即使没有选中该档位，那一轮也会被纳入编排 —— 这就是 Claude 的关键字触发器。出现 `ultrathink` 则把那一轮的强度提到模型顶层，且不动滑条档位。匹配器就是 Claude 的那个：以斜杠指令开头的 prompt 会被忽略，引号、反引号、括号内的关键字同样被忽略，紧贴路径分隔符或文件扩展名的也不算。两个关键字各带自己的 section；档位激活时，它们与常驻提醒并存。
 
 模式是持久的：它由已记录的 `system/message` 折叠进 `claudeUltraMode` 会话投影，因此刷新或恢复会话都能在没有新请求的情况下还原第五格。
 
@@ -87,7 +87,7 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 | `ultra_effort_enter`（sparse） | Ultracode is still on — use the 'subagent' and 'subagent_fork' tools; see the Ultracode section of the DSH agent-team usage notes below. |
 | `ultra_effort_exit` | Ultracode is off — the standard opt-in rule for multi-agent delegation applies again. Only delegate when the user has explicitly asked for sub-agents, delegation, or parallel agent work; a task that would merely benefit from parallelism does not count. |
 | `workflow_keyword_request` | The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the 'subagent' and 'subagent_fork' tools to fulfill the request. |
-| `ultrathink_effort` | 不发出。锁定在 `src/prompts.ts`；它提升的是单轮强度而不是切换模式，而本插件的强度入口是滑条。 |
+| `ultrathink_effort` | The user included the keyword "ultrathink", requesting deeper reasoning on this turn. Reason as thoroughly as the task warrants. |
 
 退出文案的第二句复述了 Claude Workflow 工具描述里的 opt-in 规则（`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`），也就是第一句所指的那条规则。
 
@@ -104,7 +104,7 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 
 - **必须安装切换器。** `dsh-codex-effort-switcher` 必须在同一 profile 中。浏览器半通过 `ctx.get` 而非 `ctx.inject` 读取它的 `codexModelTiers` 服务，因为 pending 的 inject 会被客户端启动审计判为插件加载失败并让整个界面白屏；因此没有切换器的组合能正常加载，只是不贡献任何档位。
 - **提醒节奏。** Claude 在第一轮发出进入提醒，之后每 10 个用户轮次发一次稀疏提醒（`Uxr()`），退出时只发一次。本插件每次组装都会重申进入提醒（先是 full，之后是 still-on 文本），并在关闭态下持续重申退出文案。Claude 的提醒是消息附件，重复会撑大它的对话；本 section 是每次请求重建的系统提示词，重复不占额外上下文。文本是 Claude 的，频率是 DSH 语境下的等价做法。
-- **`ultrathink` 关键字未接线。** Claude 在 prompt 含 `ultrathink` 时把那一轮提升到 `xhigh`。那属于单轮强度覆盖而非模式切换，而本插件的强度入口是滑条；文案已锁定在 `src/prompts.ts`。`ultracode` 关键字已接线，其匹配器是 Claude 那个的移植。
+- **`ultrathink` 的 boost 会在该轮结束时撤销。** DSH 把强度存在请求头里，之后的每个请求都会继承，所以只改写请求 config 的 boost 会把整个会话永久抬高。轮结束时插件会提交一次选择，把 boost 顶掉的原值还回去；这一步通过 `ctx.get('sessionController')` 而非注入获取，因此没有该服务的组合仍能加载，只是 boost 会持续到该会话下一次选择。用户在 boost 那一轮里自己做的选择会取消这次撤销，而不是被它覆盖。中途排队的 prompt 会在同一个 `turn/end` 丢掉 boost —— 这点与 `ultracode` 的 opt-in 不同，后者由认领该 prompt 的那一轮消费。
 - **默认选择会被保存。** 标准 `session.selectModel` 路径同时会把该选择保存为 profile 默认值，因此选中 Ultra 可能把顶层强度留作新会话的默认。保存的是强度而非模式，所以新会话可能以该强度开始却没有 Ultra 的指令。这是切换器共享的选择路径，不是 Ultra 独有的路径。
 - **首次请求前 arm 只在内存里。** 选中 Ultra 后立刻刷新页面会丢掉本地格子；首次请求之后由已记录的 system message 还原。
 - **卸载会留下历史。** 移除插件会停止新的 Ultra section 并移除第五格，但既有会话已记录的 system prompt 仍含模式文本；恢复该会话会看到旧指令。

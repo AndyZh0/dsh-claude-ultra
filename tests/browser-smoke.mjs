@@ -194,7 +194,7 @@ try {
   assert.equal(ultraRequest.reasoning_effort, 'max', 'the tier did not route the top effort')
   assert.ok(promptText(ultraRequest).includes('Ultracode is on:'), 'the entry section did not reach the request')
   assert.ok(promptText(ultraRequest).includes('subagent_fork'), 'the entry section lost its DSH tool names')
-  assert.ok(!promptText(ultraRequest).includes('The user included the keyword'), 'a keyword section appeared without the keyword')
+  assert.ok(!promptText(ultraRequest).includes('opting this turn into multi-agent orchestration'), 'a keyword section appeared without the keyword')
 
   // Path 2: the keyword, at a lower tier, so the entry section must be absent.
   await trigger.click()
@@ -203,16 +203,36 @@ try {
   const keywordRequest = turnRequestOf(await send('ultracode: reply with the fixture text.'))
   assert.ok(keywordRequest !== undefined, 'the keyword turn produced no tool-bearing request')
   assert.equal(keywordRequest.reasoning_effort, 'high', 'the keyword must not move the tier')
-  assert.ok(promptText(keywordRequest).includes('The user included the keyword'), 'the keyword section did not reach the request')
+  assert.ok(promptText(keywordRequest).includes('opting this turn into multi-agent orchestration'), 'the keyword section did not reach the request')
   assert.ok(!promptText(keywordRequest).includes('Ultracode is on:'), 'the entry section outlived the tier')
 
   // Path 3: the opt-in is per turn, so the next prompt must not carry it.
   const plainRequest = turnRequestOf(await send('Reply with the fixture text again.'))
   assert.ok(plainRequest !== undefined, 'the follow-up turn produced no tool-bearing request')
-  assert.ok(!promptText(plainRequest).includes('The user included the keyword'), 'the keyword section leaked into the next turn')
+  assert.ok(!promptText(plainRequest).includes('opting this turn into multi-agent orchestration'), 'the keyword section leaked into the next turn')
+
+  // Path 4: ultrathink raises this turn's effort without touching the tier, and
+  // the boost is turn-scoped, so the turn after it is back at the tier's level.
+  const deepRequest = turnRequestOf(await send('ultrathink: reply with the fixture text.'))
+  assert.ok(deepRequest !== undefined, 'the ultrathink turn produced no tool-bearing request')
+  assert.equal(deepRequest.reasoning_effort, 'max', 'the ultrathink keyword did not raise the effort')
+  assert.ok(promptText(deepRequest).includes('requesting deeper reasoning on this turn'), 'the ultrathink section did not reach the request')
+  assert.ok(!promptText(deepRequest).includes('Ultracode is on:'), 'the entry section appeared without the tier')
+  // DSH keeps the effort in the request header, so the boost would raise the
+  // Session for good; the turn's end submits a selection undoing it. That undo
+  // is submitted in the background, so the seat returns a moment later.
+  const settle = Date.now() + 15000
+  while (!/reasoning effort High$/.test((await trigger.getAttribute('aria-label')) ?? '') && Date.now() < settle) {
+    await page.waitForTimeout(200)
+  }
+  assert.match(await trigger.getAttribute('aria-label'), /reasoning effort High$/, 'ultrathink left the tier raised')
+
+  const afterDeep = turnRequestOf(await send('Reply with the fixture text once more.'))
+  assert.ok(afterDeep !== undefined, 'the turn after ultrathink produced no tool-bearing request')
+  assert.equal(afterDeep.reasoning_effort, 'high', 'the ultrathink boost outlived its turn')
 
   assert.deepEqual(errors, [])
-  console.log('Smoke passed: fifth tier, top-effort routing, the entry section, the keyword section, and its per-turn lifetime.')
+  console.log('Smoke passed: fifth tier, top-effort routing, the entry section, the keyword section and its per-turn lifetime, and the ultrathink boost with its turn-end undo.')
 } catch (error) {
   console.error(error.message)
   for (const entry of errors.slice(0, 4)) console.error('BROWSER: ' + entry.slice(0, 400))
@@ -234,7 +254,8 @@ try {
       effort: body.reasoning_effort,
       tools: Array.isArray(body.tools) ? body.tools.length : 0,
       enter: JSON.stringify(body.messages ?? []).includes('Ultracode is on:'),
-      keyword: JSON.stringify(body.messages ?? []).includes('The user included the keyword'),
+      keyword: JSON.stringify(body.messages ?? []).includes('opting this turn into multi-agent orchestration'),
+      ultrathink: JSON.stringify(body.messages ?? []).includes('requesting deeper reasoning on this turn'),
     })),
   }, null, 2) + '\n')
   await writeFile(resolve(run, 'host.log'), logs)

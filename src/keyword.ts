@@ -110,3 +110,12 @@ export function findUltraKeyword(text: string, word: string): readonly UltraKeyw
 export function hasUltraKeyword(text: string): boolean {
   return findUltraKeyword(text, 'ultracode').length > 0
 }
+
+/**
+ * Whether one prompt asks for deeper reasoning on its turn.
+ * @param text - the prompt as typed.
+ * @returns whether Claude's ultrathink keyword is present.
+ */
+export function hasUltrathinkKeyword(text: string): boolean {
+  return findUltraKeyword(text, 'ultrathink').length > 0
+}

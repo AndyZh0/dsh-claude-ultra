@@ -132,6 +132,21 @@ export interface UltraSessions {
   get(id: UltraSessionId): UltraSession | undefined
 }
 
+/** The Host Session business API that installs a Session-local model selection. */
+export interface UltraSessionController {
+  /**
+   * Validate and install one Session-local selection.
+   * @param request - Session identity and the selection to install.
+   * @returns the normalized selection.
+   */
+  selectModel(request: {
+    sessionId: string
+    provider: string
+    model: string
+    reasoningEffort?: string
+  }): Promise<unknown>
+}
+
 /** The Agent registry. */
 export interface UltraAgents {
   get(id: UltraSessionId): UltraAgent | undefined
@@ -160,6 +175,16 @@ export interface UltraConnection {
 export interface ClaudeUltraContext {
   /** Register a contribution; the callback returns its disposer. */
   effect(callback: () => () => void, label?: string): void
+  /**
+   * Read an optional service.
+   *
+   * Used instead of an injection for services this plugin degrades without: a
+   * pending inject is a client-boot failure, and the Host side has no equivalent
+   * of the switcher's tier service to guarantee.
+   * @param name - service name.
+   * @returns the service, or undefined when this composition mounts none.
+   */
+  get(name: string): unknown
   on(
     event: 'system-prompt/assemble',
     listener: (assembly: UltraPromptAssembly, context: UltraAssembleContext, next: () => Promise<UltraPromptAssembly>) => Promise<UltraPromptAssembly>,

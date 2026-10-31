@@ -3,11 +3,14 @@ import assert from 'node:assert/strict'
 import {
   apply,
   CLAUDE_ULTRA_KEYWORD_SECTION,
+  CLAUDE_ULTRA_ULTRATHINK_SECTION,
   createClaudeUltraArmStore,
+  createClaudeUltraBoostStore,
   createClaudeUltraKeywordStore,
   registerClaudeUltraKeywordCapture,
   resolveClaudeUltraReminder,
   SUBAGENT_USAGE_HINT,
+  ULTRATHINK_EFFORT,
   ULTRA_ENTER_FULL,
   ULTRA_EXIT,
   ULTRA_KEYWORD_REQUEST,
@@ -17,6 +20,7 @@ import {
 const KEY = 'claudeUltraMode'
 const SECTION = 'claude-ultra:mode'
 const KEYWORD_SECTION = 'claude-ultra:keyword'
+const ULTRATHINK_SECTION = 'claude-ultra:ultrathink'
 const ARM = { provider: 'acme', model: 'astra', effort: 'max' }
 
 /** The selection the next request will use. */
@@ -54,6 +58,20 @@ function context(options = {}) {
   const states = options.states ?? {}
   const agents = options.agents ?? {}
   const listeners = new Map()
+  const warnings = []
+  const modelInfoCalls = []
+  const routes = []
+  const selectCalls = []
+  // A test passes sessionController to control the optional service: undefined
+  // stands for a composition without it, {} for one that does not serve it.
+  const controller = 'sessionController' in options
+    ? options.sessionController
+    : {
+      selectModel: async (selection) => {
+        selectCalls.push(selection)
+        if (options.selectModelError !== undefined) throw options.selectModelError
+      },
+    }
   return {
     effect(callback) { return callback() },
     on(event, listener) {
@@ -68,19 +86,28 @@ function context(options = {}) {
     emit(event, ...args) {
       return (listeners.get(event) ?? []).map(listener => listener(...args))
     },
-    logger: { warn() {} },
+    logger: { warn(message) { warnings.push(message) } },
     sessionProjections: {
       register: () => () => {},
       stateOf: (session, key) => states[session.id]?.[key],
     },
-    sessions: { get: () => undefined },
+    sessions: { get: (id) => ({ id }) },
     llm: {
-      resolveModelInfo: async () => ({}),
+      resolveModelInfo: async (provider, model) => {
+        modelInfoCalls.push({ provider, model })
+        if (options.modelInfoError !== undefined) throw options.modelInfoError
+        return options.modelInfo ?? {}
+      },
       resolveCallConfig: async (request) => request,
     },
     agents: { get: (id) => agents[id] },
-    connection: { fetch: { register: () => () => {} } },
+    connection: { fetch: { register(candidate) { routes.push(candidate); return () => {} } } },
+    get: (name) => (name === 'sessionController' ? controller : undefined),
     listeners,
+    warnings,
+    modelInfoCalls,
+    routes,
+    selectCalls,
   }
 }
 
@@ -223,13 +250,49 @@ test('clearing a session the keyword store has never seen is a no-op', () => {
   assert.equal(keywords.get('session-2'), false)
 })
 
+// --- the boost store --------------------------------------------------------
+
+test('the boost store reports false for a session it has never seen', () => {
+  assert.equal(createClaudeUltraBoostStore().get('session-1'), false)
+})
+
+test('the boost store records one session and reports it back', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  assert.equal(boosts.get('session-1'), true)
+  boosts.set('session-1', false)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('the boost store is per session', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  assert.equal(boosts.get('session-2'), false)
+})
+
+test('the boost store forgets a cleared session', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.clear('session-1')
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('clearing a session the boost store has never seen is a no-op', () => {
+  const boosts = createClaudeUltraBoostStore()
+  boosts.set('session-1', true)
+  boosts.clear('session-2')
+  assert.equal(boosts.get('session-1'), true)
+  assert.equal(boosts.get('session-2'), false)
+})
+
 // --- the inbox capture listener ---------------------------------------------
 
 /** Register the capture hooks over a fresh store. */
 function capture(options = {}) {
   const ctx = context(options)
   const keywords = createClaudeUltraKeywordStore()
-  const dispose = registerClaudeUltraKeywordCapture(ctx, keywords)
+  const boosts = createClaudeUltraBoostStore()
+  const dispose = registerClaudeUltraKeywordCapture(ctx, keywords, boosts)
   const inserted = ctx.listeners.get('agent/inbox/inserted')
   assert.ok(Array.isArray(inserted), 'the capture registered no inbox listener')
   assert.equal(inserted.length, 1)
@@ -239,7 +302,7 @@ function capture(options = {}) {
     assert.equal(results.length, 1, 'the capture registered no pre-step listener')
     return await results[0]
   }
-  return { ctx, keywords, insert, preStep, dispose }
+  return { ctx, keywords, boosts, insert, preStep, dispose }
 }
 
 test('a typed prompt carrying the keyword records the opt-in', () => {
@@ -317,6 +380,94 @@ test('the capture records each session separately', () => {
   insert('session-2', inboxMessage(['nothing here'], TYPED))
   assert.equal(keywords.get('session-1'), true)
   assert.equal(keywords.get('session-2'), false)
+})
+
+test('ultracode alone records the opt-in and no boost', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['please ultracode this'], TYPED))
+  assert.equal(keywords.get('session-1'), true)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('ultrathink alone records the boost and no opt-in', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['please ultrathink about this'], TYPED))
+  assert.equal(keywords.get('session-1'), false)
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('both keywords record both', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['ultracode and ultrathink'], TYPED))
+  assert.equal(keywords.get('session-1'), true)
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('a later prompt with neither keyword clears both', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['ultracode and ultrathink'], TYPED))
+  insert('session-1', inboxMessage(['and now nothing at all'], TYPED))
+  assert.equal(keywords.get('session-1'), false)
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('the boost is read out of the text blocks of the prompt', () => {
+  const { boosts, insert } = capture()
+  insert('session-1', inboxMessage(['please ultra', 'think about this'], TYPED))
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('a delimited ultrathink does not boost', () => {
+  const { boosts, insert } = capture()
+  insert('session-1', inboxMessage(['run `ultrathink` now'], TYPED))
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('a slash-prefixed ultrathink does not boost', () => {
+  const { boosts, insert } = capture()
+  insert('session-1', inboxMessage(['/ultrathink'], TYPED))
+  assert.equal(boosts.get('session-1'), false)
+})
+
+test('ultracode does not boost and ultrathink does not opt in', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['ultracode'], TYPED))
+  assert.equal(keywords.get('session-1'), true)
+  assert.equal(boosts.get('session-1'), false)
+  insert('session-2', inboxMessage(['ultrathink'], TYPED))
+  assert.equal(keywords.get('session-2'), false)
+  assert.equal(boosts.get('session-2'), true)
+})
+
+test('a message the human did not type leaves both stores untouched', () => {
+  for (const kind of ['runtime-context', 'skill-catalog', 'time-context']) {
+    const { keywords, boosts, insert } = capture()
+    keywords.set('session-1', true)
+    boosts.set('session-1', true)
+    insert('session-1', inboxMessage(['ultracode and ultrathink'], { kind }))
+    assert.equal(keywords.get('session-1'), true, kind + ' cleared the opt-in')
+    assert.equal(boosts.get('session-1'), true, kind + ' cleared the boost')
+    assert.equal(keywords.get('session-2'), false, kind + ' set the opt-in')
+    assert.equal(boosts.get('session-2'), false, kind + ' set the boost')
+  }
+})
+
+test('a message with no source leaves both stores untouched', () => {
+  const { keywords, boosts, insert } = capture()
+  keywords.set('session-1', true)
+  boosts.set('session-1', true)
+  insert('session-1', inboxMessage(['ultracode and ultrathink']))
+  assert.equal(keywords.get('session-1'), true)
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('a step that claimed a typed prompt leaves the boost standing', async () => {
+  // The boost covers every step of its turn, so the pre-step clear is the
+  // opt-in's alone; agent/request consumes the boost and turn/end clears it.
+  const { boosts, insert, preStep } = capture()
+  insert('session-1', inboxMessage(['ultrathink'], TYPED))
+  await preStep('session-1', [inboxMessage(['ultrathink'], TYPED)], async () => 'upstream')
+  assert.equal(boosts.get('session-1'), true)
 })
 
 test('a step that claimed a typed prompt clears the opt-in', async () => {
@@ -567,3 +718,355 @@ test('disposing the agent forgets the opt-in', async () => {
   const { result } = await assemble(listener, upstream, { agent: agent('root') })
   assert.equal(result, upstream)
 })
+
+// --- the ultrathink section -------------------------------------------------
+
+test('a boost alone appends only the ultrathink section', async () => {
+  const { ctx, listener } = mount()
+  const upstream = { sections: [{ name: 'base', text: 'base' }] }
+  insert(ctx, 'root', inboxMessage(['please ultrathink about this'], TYPED))
+  const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(counter.next, 1)
+  assert.equal(result.sections.length, 2)
+  assert.equal(result.sections[0], upstream.sections[0])
+  assert.equal(result.sections[1].name, ULTRATHINK_SECTION)
+  assert.equal(result.sections[1].text, ULTRATHINK_EFFORT)
+})
+
+test('the ultrathink section carries the pinned ultrathink text', async () => {
+  const { ctx, listener } = mount()
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const { result } = await assemble(listener, { sections: [] }, { agent: agent('root') })
+  assert.equal(result.sections.length, 1)
+  assert.equal(result.sections[0].name, CLAUDE_ULTRA_ULTRATHINK_SECTION)
+  assert.equal(result.sections[0].text, ULTRATHINK_EFFORT)
+})
+
+test('all three conditions append mode, keyword, then ultrathink', async () => {
+  const { ctx, listener } = mount({ states: { root: modeState('full', false) } })
+  const upstream = { sections: [{ name: 'base', text: 'base' }] }
+  insert(ctx, 'root', inboxMessage(['ultracode and ultrathink'], TYPED))
+  const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(counter.next, 1)
+  assert.equal(result.sections.length, 4)
+  assert.equal(result.sections[0], upstream.sections[0])
+  assert.deepEqual(result.sections.slice(1).map(section => section.name), [SECTION, KEYWORD_SECTION, ULTRATHINK_SECTION])
+  assert.equal(result.sections[1].text, usageHintFor(false) + '\n\n' + ULTRA_ENTER_FULL)
+  assert.equal(result.sections[2].text, ULTRA_KEYWORD_REQUEST)
+  assert.equal(result.sections[3].text, ULTRATHINK_EFFORT)
+})
+
+test('a subagent assembly carries all three sections with the subagent hint', async () => {
+  const child = agent('child', { header: { origin: 'subagent', parentSession: 'parent' } })
+  const { ctx, listener } = mount({ states: { parent: modeState('still', false) }, agents: { parent: agent('parent') } })
+  insert(ctx, 'child', inboxMessage(['ultracode and ultrathink'], TYPED))
+  const { result } = await assemble(listener, { sections: [] }, { agent: child })
+  assert.deepEqual(result.sections.map(section => section.name), [SECTION, KEYWORD_SECTION, ULTRATHINK_SECTION])
+  assert.equal(result.sections[0].text, SUBAGENT_USAGE_HINT + '\n\n' + ULTRA_ENTER_FULL)
+})
+
+test('a boost recorded for another session is not appended', async () => {
+  const { ctx, listener } = mount()
+  insert(ctx, 'other', inboxMessage(['ultrathink'], TYPED))
+  const upstream = { sections: [] }
+  const { result } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(result, upstream)
+})
+
+test('a boost the human did not type is not appended', async () => {
+  const { ctx, listener } = mount()
+  insert(ctx, 'root', inboxMessage(['ultrathink'], { kind: 'runtime-context' }))
+  const upstream = { sections: [] }
+  const { result } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(result, upstream)
+})
+
+test('with no mode, no keyword and no boost the assembly is the identical upstream', async () => {
+  const { ctx, listener } = mount()
+  const upstream = { sections: [{ name: 'base', text: 'base' }] }
+  insert(ctx, 'root', inboxMessage(['nothing here at all'], TYPED))
+  const { result, counter } = await assemble(listener, upstream, { agent: agent('root') })
+  assert.equal(counter.next, 1)
+  assert.equal(result, upstream)
+})
+
+// --- the request-time boost -------------------------------------------------
+
+/** The reasoning levels an adapter advertises for one route. */
+const LEVELS = { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }] } }
+const NO_MAX = { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }] } }
+
+/** Run one agent/request with a fixed upstream config. */
+async function request(ctx, sessionId, config) {
+  const results = ctx.emit('agent/request', { agent: agent(sessionId) }, async () => config)
+  assert.equal(results.length, 1, 'the plugin registered no agent/request listener')
+  return await results[0]
+}
+
+/** Arm one session through the plugin's own route. */
+async function armSession(ctx, sessionId, payload) {
+  const route = ctx.routes[0]
+  assert.ok(route !== undefined, 'the plugin registered no arm route')
+  const response = await route.fetch(new Request('http://localhost' + route.path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ rpcId: 'rpc-1', method: 'dsh-claude-ultra/arm', payload: { sessionId, ...payload } }),
+  }))
+  const body = await response.json()
+  assert.equal(body.result.ok, true, JSON.stringify(body.result))
+}
+
+test('a boost rewrites the request to the top advertised level', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  const result = await request(ctx, 'root', config)
+  assert.deepEqual(result, { provider: 'acme', model: 'astra', reasoningEffort: 'max' })
+  assert.notEqual(result, config)
+  assert.deepEqual(ctx.modelInfoCalls, [{ provider: 'acme', model: 'astra' }])
+})
+
+test('a boost without a max level rewrites to the highest advertised level', async () => {
+  const { ctx } = mount({ modelInfo: NO_MAX })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
+  assert.equal(result.reasoningEffort, 'high')
+})
+
+test('a boost leaves a request already at the top level alone', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'max' }
+  assert.equal(await request(ctx, 'root', config), config)
+})
+
+test('a boost leaves a model with no usable level alone', async () => {
+  const { ctx } = mount({ modelInfo: { reasoning: { efforts: [{ id: 'off' }] } } })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+})
+
+test('a boost leaves an unresolvable route alone and warns once', async () => {
+  const { ctx } = mount({ modelInfoError: new Error('no route') })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.equal(ctx.warnings.length, 1)
+  assert.ok(ctx.warnings[0].includes('ultrathink'))
+  assert.ok(ctx.warnings[0].includes('no route'))
+})
+
+test('the boost is not consumed by a request', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const first = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
+  const second = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
+  assert.equal(first.reasoningEffort, 'max')
+  assert.equal(second.reasoningEffort, 'max')
+  assert.equal(ctx.modelInfoCalls.length, 2)
+})
+
+test('a turn boundary clears the boost', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('disposing the agent clears the boost', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  ctx.emit('agent/disposed', { agent: agent('root') })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('a request with no boost is left alone and never resolves the model', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('a boost on another session does not rewrite this one', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  insert(ctx, 'other', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.deepEqual(ctx.modelInfoCalls, [])
+})
+
+test('an armed request whose effort landed does not warn, even with a boost', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  await armSession(ctx, 'root', { provider: 'acme', model: 'astra', effort: 'max' })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'max' }
+  assert.equal(await request(ctx, 'root', config), config)
+  assert.deepEqual(ctx.warnings, [])
+})
+
+test('an armed request whose effort did not land warns once', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  await armSession(ctx, 'root', { provider: 'acme', model: 'astra', effort: 'max' })
+  const config = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+  await request(ctx, 'root', config)
+  assert.equal(ctx.warnings.length, 1)
+  assert.ok(ctx.warnings[0].includes('did not reach the request'))
+})
+
+test('the arm check reads the config before the boost rewrites it', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  await armSession(ctx, 'root', { provider: 'acme', model: 'astra', effort: 'max' })
+  insert(ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const result = await request(ctx, 'root', { provider: 'acme', model: 'astra', reasoningEffort: 'low' })
+  // The arm did not land as the session configured it, even though the boost
+  // raises the request to the same level afterwards.
+  assert.equal(result.reasoningEffort, 'max')
+  assert.equal(ctx.warnings.length, 1)
+  assert.ok(ctx.warnings[0].includes('did not reach the request'))
+})
+
+
+// --- the turn-end undo of the boost -----------------------------------------
+
+/** Let a void-ed undo promise settle. */
+function flush() {
+  return new Promise(resolve => { setImmediate(resolve) })
+}
+
+const BOOSTED = { provider: 'acme', model: 'astra', reasoningEffort: 'low' }
+
+/** Mount a boosted session and run the request the boost rewrites. */
+async function boosted(options = {}, config = BOOSTED) {
+  const mounted = mount({ modelInfo: LEVELS, ...options })
+  insert(mounted.ctx, 'root', inboxMessage(['ultrathink'], TYPED))
+  const result = await request(mounted.ctx, 'root', config)
+  return { ...mounted, result }
+}
+
+test('turn end puts the displaced selection back', async () => {
+  const { ctx, result } = await boosted()
+  assert.equal(result.reasoningEffort, 'max')
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [{ sessionId: 'root', provider: 'acme', model: 'astra', reasoningEffort: 'low' }])
+})
+
+test('the displaced selection omits an effort the config never carried', async () => {
+  const { ctx, result } = await boosted({}, { provider: 'acme', model: 'astra' })
+  assert.equal(result.reasoningEffort, 'max')
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.equal(ctx.selectCalls.length, 1)
+  assert.deepEqual(ctx.selectCalls[0], { sessionId: 'root', provider: 'acme', model: 'astra' })
+  assert.equal('reasoningEffort' in ctx.selectCalls[0], false)
+})
+
+test('a request already at the top level records no displacement', async () => {
+  const { ctx, result } = await boosted({}, { provider: 'acme', model: 'astra', reasoningEffort: 'max' })
+  assert.equal(result.reasoningEffort, 'max')
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('a model with no usable level records no displacement', async () => {
+  const { ctx } = await boosted({ modelInfo: { reasoning: { efforts: [{ id: 'off' }] } } })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('an unresolvable route records no displacement', async () => {
+  const { ctx } = await boosted({ modelInfoError: new Error('no route') })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('an unboosted turn records no displacement', async () => {
+  const { ctx } = mount({ modelInfo: LEVELS })
+  await request(ctx, 'root', BOOSTED)
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('a composition without the session controller is a silent no-op', async () => {
+  const { ctx } = await boosted({ sessionController: undefined })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.warnings, [])
+})
+
+test('a session controller that does not serve selectModel is a silent no-op', async () => {
+  const { ctx } = await boosted({ sessionController: {} })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.warnings, [])
+})
+
+test('a rejected undo warns once and does not escape', async () => {
+  const rejections = []
+  const onRejection = (reason) => rejections.push(reason)
+  process.on('unhandledRejection', onRejection)
+  try {
+    const { ctx } = await boosted({ selectModelError: new Error('undo refused') })
+    ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+    await flush()
+    assert.equal(ctx.selectCalls.length, 1)
+    assert.equal(ctx.warnings.length, 1)
+    assert.ok(ctx.warnings[0].includes('was not undone'))
+    assert.ok(ctx.warnings[0].includes('undo refused'))
+    assert.deepEqual(rejections, [])
+  } finally {
+    process.off('unhandledRejection', onRejection)
+  }
+})
+
+test('a model selection during the turn cancels the undo', async () => {
+  const { ctx } = await boosted()
+  ctx.emit('session/event', { id: 'root' }, { type: 'model/selection' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('disposing the agent cancels the undo', async () => {
+  const { ctx } = await boosted()
+  ctx.emit('agent/disposed', { agent: agent('root') })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('the undo is submitted once for two turn ends', async () => {
+  const { ctx } = await boosted()
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.equal(ctx.selectCalls.length, 1)
+})
+
+test('the undo belongs to the session that was boosted', async () => {
+  const { ctx } = await boosted()
+  ctx.emit('session/event', { id: 'other' }, { type: 'turn/end' })
+  await flush()
+  assert.deepEqual(ctx.selectCalls, [])
+})
+
+test('turn end submits the undo and leaves the keyword opt-in standing', async () => {
+  const { ctx, listener } = mount({ modelInfo: LEVELS, states: { root: modeState('full', false) } })
+  insert(ctx, 'root', inboxMessage(['ultracode and ultrathink'], TYPED))
+  await request(ctx, 'root', BOOSTED)
+  ctx.emit('session/event', { id: 'root' }, { type: 'turn/end' })
+  await flush()
+  assert.equal(ctx.selectCalls.length, 1)
+  const { result } = await assemble(listener, { sections: [] }, { agent: agent('root') })
+  assert.deepEqual(result.sections.map(section => section.name), [SECTION, KEYWORD_SECTION])
+})
+
