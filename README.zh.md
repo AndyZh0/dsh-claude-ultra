@@ -9,7 +9,7 @@ kind: "package-bundle"
 
 ## 摘要
 
-为 DSH 加入 Claude 的 **Ultra** 模式。Ultra 是 [Codex 强度切换器](../codex-effort-switcher/README.zh.md)滑条上、位于模型自有档位之上的第五档：选中后本会话以模型最高推理强度运行，并保持多智能体编排常驻，携带的正是 Claude Code 在 ultracode 开启时携带的那段指令。
+为 DSH 加入 Claude 的 **Ultra** 模式。Ultra 是 [Codex 强度切换器](https://github.com/AndyZh0/dsh-codex-effort-switcher/blob/master/README.zh.md)滑条上、位于模型自有档位之上的第五档：选中后本会话以模型最高推理强度运行，并保持多智能体编排常驻，携带的正是 Claude Code 在 ultracode 开启时携带的那段指令。
 
 本包是该模式的 Host 半与浏览器半。浏览器半读取切换器的 `codexModelTiers` 客户端服务，因此**同一 profile 中必须装有 `dsh-codex-effort-switcher` 0.2.0 或更新版本**。没有切换器时本包不贡献任何档位，输入框保持出厂选择器。
 
@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile web add "D:/Projects/deepseek-harness/plugins/dsh-claude-ultra/dsh-claude-ultra-0.1.0.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.1.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。

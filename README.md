@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Adds Claude's **Ultra** mode to DSH. Ultra is a fifth tier on the [Codex effort switcher](../codex-effort-switcher/README.md)'s slider, above the model's own levels. Selecting it runs the session at the model's highest reasoning effort and keeps multi-agent orchestration standing, carrying the same instruction Claude Code carries when ultracode is on.
+Adds Claude's **Ultra** mode to DSH. Ultra is a fifth tier on the [Codex effort switcher](https://github.com/AndyZh0/dsh-codex-effort-switcher)'s slider, above the model's own levels. Selecting it runs the session at the model's highest reasoning effort and keeps multi-agent orchestration standing, carrying the same instruction Claude Code carries when ultracode is on.
 
 This package is the Host and browser half of the mode. The browser half reads the switcher's `codexModelTiers` client service, so **`dsh-codex-effort-switcher` 0.2.0 or newer must be installed in the same profile**. Without the switcher this package contributes no tier and the composer keeps its shipped picker.
 
@@ -34,7 +34,7 @@ Build the package inside this directory; development dependencies and artifacts 
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile web add "D:/Projects/deepseek-harness/plugins/dsh-claude-ultra/dsh-claude-ultra-0.1.0.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.1.tgz"
 ```
 
 Install into the profile you actually use. `dsh plugin add` appends the bundle row and runs pnpm inside the profile directory. A profile composes its bundle rows at boot, so restart the app afterwards; `patchReload: live` reloads patch and config edits, not a new bundle row.

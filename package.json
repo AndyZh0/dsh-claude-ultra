@@ -1,9 +1,18 @@
 {
   "name": "dsh-claude-ultra",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude-style Ultra mode for DSH: the top reasoning effort plus standing multi-agent orchestration",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndyZh0/dsh-claude-ultra.git"
+  },
+  "homepage": "https://github.com/AndyZh0/dsh-claude-ultra#readme",
+  "bugs": {
+    "url": "https://github.com/AndyZh0/dsh-claude-ultra/issues"
+  },
+  "keywords": ["dsh","dsh-plugin","deepseek-harness","claude-code","ultracode","reasoning-effort","multi-agent"],
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
