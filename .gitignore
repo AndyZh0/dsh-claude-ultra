@@ -1,0 +1,15 @@
+# Installed dependencies.
+node_modules/
+
+# Build output. package.json's "files" list still ships lib/ inside the archive;
+# this rule only keeps it out of git.
+lib/
+
+# The esbuild bundle the test runner writes.
+.test/
+
+# Archives produced by `npm pack`.
+*.tgz
+
+# Browser-smoke evidence: run directories and screenshots copied out of them.
+.runtime/
