@@ -112,10 +112,20 @@ export function hasUltraKeyword(text: string): boolean {
 }
 
 /**
+ * Claude's ultrathink trigger, which is looser than its ultracode one.
+ *
+ * The reminder emitter tests \`/\\bultrathink\\b/i\` (byte offset 294821831), not the
+ * span-aware matcher: that one is used for the composer highlight and for
+ * ultracode. So a quoted, backticked, slash-prefixed, or dotted ultrathink does
+ * fire in Claude, while an inflected one does not.
+ */
+const ULTRATHINK_WORD = /\bultrathink\b/i
+
+/**
  * Whether one prompt asks for deeper reasoning on its turn.
  * @param text - the prompt as typed.
  * @returns whether Claude's ultrathink keyword is present.
  */
 export function hasUltrathinkKeyword(text: string): boolean {
-  return findUltraKeyword(text, 'ultrathink').length > 0
+  return ULTRATHINK_WORD.test(text)
 }

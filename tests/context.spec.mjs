@@ -425,16 +425,29 @@ test('the boost is read out of the text blocks of the prompt', () => {
   assert.equal(boosts.get('session-1'), true)
 })
 
-test('a delimited ultrathink does not boost', () => {
+test('a delimited ultrathink still boosts', () => {
   const { boosts, insert } = capture()
   insert('session-1', inboxMessage(['run `ultrathink` now'], TYPED))
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('a slash-prefixed ultrathink still boosts', () => {
+  const { boosts, insert } = capture()
+  insert('session-1', inboxMessage(['/ultrathink'], TYPED))
+  assert.equal(boosts.get('session-1'), true)
+})
+
+test('an inflected ultrathink does not boost', () => {
+  const { boosts, insert } = capture()
+  insert('session-1', inboxMessage(['ultrathinks about it'], TYPED))
   assert.equal(boosts.get('session-1'), false)
 })
 
-test('a slash-prefixed ultrathink does not boost', () => {
-  const { boosts, insert } = capture()
-  insert('session-1', inboxMessage(['/ultrathink'], TYPED))
-  assert.equal(boosts.get('session-1'), false)
+test('the capture reads the loose matcher for ultrathink and the strict one for ultracode', () => {
+  const { keywords, boosts, insert } = capture()
+  insert('session-1', inboxMessage(['run `ultracode` and ultrathink'], TYPED))
+  assert.equal(keywords.get('session-1'), false)
+  assert.equal(boosts.get('session-1'), true)
 })
 
 test('ultracode does not boost and ultrathink does not opt in', () => {

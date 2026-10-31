@@ -34,7 +34,7 @@ Build the package inside this directory; development dependencies and artifacts 
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.5.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.6.tgz"
 ```
 
 Install into the profile you actually use. `dsh plugin add` appends the bundle row and runs pnpm inside the profile directory. A profile composes its bundle rows at boot, so restart the app afterwards; `patchReload: live` reloads patch and config edits, not a new bundle row.
@@ -50,7 +50,9 @@ Click the model chip, choose a model that advertises a reasoning effort, and cli
 
 The next model request carries the mapped effort and a system-prompt section holding Claude's ultracode instruction plus the DSH agent-team usage notes. The mode stays active for later requests and for child agents. Choosing any lower level, in this card or through `/model`, makes the next assembly materialize Claude's exit text instead.
 
-A prompt that contains the whole word `ultracode` opts that turn into orchestration even when the tier is not selected, which is Claude's keyword trigger. A prompt that contains `ultrathink` instead raises that turn's effort to the model's top level without moving the tier. The matcher is Claude's: a prompt that starts with a slash command is ignored, as is a keyword inside quotes, backticks, brackets or braces, and one glued to a path separator or a file extension. Each keyword contributes its own section, beside the standing one when the tier is active.
+A prompt that contains the whole word `ultracode` opts that turn into orchestration even when the tier is not selected, which is Claude's keyword trigger. A prompt that contains `ultrathink` instead raises that turn's effort to the model's top level without moving the tier. Each keyword contributes its own section, beside the standing one when the tier is active.
+
+The two keywords use the matchers Claude uses, which differ. `ultracode` is matched by the span-aware scan that also drives Claude's composer highlight: a prompt that starts with a slash command is ignored, as is the keyword inside quotes, backticks, brackets or braces, and one glued to a path separator or a file extension. `ultrathink` is matched by the plain `/\bultrathink\b/i` its reminder emitter tests, so a quoted, backticked, slash-prefixed or dotted `ultrathink` all fire while an inflected one does not.
 
 The mode is durable: it is folded from the logged `system/message` into the `claudeUltraMode` session projection, so a reload or a resume restores the fifth cell without a new request.
 
@@ -91,6 +93,8 @@ Verbatim, with one substitution: DSH has no Workflow tool, so `the Workflow tool
 
 The exit text's second sentence restates the opt-in rule from Claude's Workflow tool description (`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`), which is the rule the first sentence refers to.
 
+Claude's keyword family also names `ultraplan` and `ultrareview`, and this plugin does not carry them. They are not part of the reminder family: the attachment table lists exactly four Ultra entries (`ultrathink_effort`, `workflow_keyword_request`, `ultra_effort_enter`, `ultra_effort_exit`), and those two words belong to Claude's plan-mode and review features, which have no DSH counterpart on this surface.
+
 The cadence is Claude's too, from the attachment builder in the same bundle: the full text on the first turn under Ultra, the short text once every 10 typed prompts, the exit text once when the mode ends, and no section at all on the turns in between. Claude measures the interval by walking the conversation back to its newest Ultra reminder and counting the user messages after it; this plugin measures it from a durable prompt count in the projection, which is the same number.
 
 <a id="compatibility"></a>
@@ -122,7 +126,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 258 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
+`npm test` builds the Host bundle and the Node-loadable browser bundle and runs 266 assertions over the effort mapping, the arm store, the projection fold, the pinned prompt text, the reminder resolution, the keyword matcher and its store, the arm route's every branch, and the browser tier. Each spec has a recorded negative proof.
 
 `npm run smoke` is the end-to-end lane, and the only one that proves the wiring rather than the units. It packs and installs both plugins into a throwaway `DSH_HOME` profile through the built CLI, points a fixture provider at a local OpenAI-compatible endpoint that records every request body, boots `dsh web` from the checkout, and drives Microsoft Edge through the real card. It asserts that the fifth Ultra tier exists, that selecting it routes `reasoning_effort: max` and carries the entry section, that a prompt containing `ultracode` at a lower tier carries the keyword section instead, and that the opt-in does not survive into the next turn. It needs the switcher beside this package (or `DSH_SWITCHER_TGZ` pointing at a packed archive), a built DSH checkout, and Microsoft Edge; evidence lands under `.runtime/browser-*`.
 

@@ -158,12 +158,78 @@ test('textOfBlocks output is what the matcher reads', () => {
 })
 
 // --- the ultrathink keyword -------------------------------------------------
+//
+// ultrathink is looser than ultracode. Claude's reminder emitter tests the bare
+// word /\bultrathink\b/i (byte offset 294821831), not the span-aware matcher it
+// uses for ultracode, so quoting, backticking, a leading slash, a trailing dot
+// and parentheses all still fire. Only an inflected or embedded word does not.
 
-test('ultrathink is matched by the same rules as ultracode', () => {
+test('a bare ultrathink is matched without regard to case', () => {
   assert.equal(hasUltrathinkKeyword('ultrathink'), true)
   assert.equal(hasUltrathinkKeyword('UltraThink'), true)
+  assert.equal(hasUltrathinkKeyword('ULTRATHINK'), true)
   assert.equal(hasUltrathinkKeyword('please ultrathink about this'), true)
   assert.equal(hasUltrathinkKeyword('just a question'), false)
+})
+
+test('a delimited, slashed or dotted ultrathink still boosts', () => {
+  const accepted = [
+    '\u0060ultrathink\u0060',
+    '"ultrathink"',
+    "'ultrathink'",
+    '<ultrathink>',
+    '{ultrathink}',
+    '[ultrathink]',
+    '(ultrathink)',
+    '/ultrathink',
+    'please /ultrathink',
+    'ultrathink.',
+    'ultrathink.js',
+    '-ultrathink',
+    'ultrathink?',
+    'ultrathink/',
+    'run \u0060ultrathink\u0060 now',
+  ]
+  for (const text of accepted) {
+    assert.equal(hasUltrathinkKeyword(text), true, JSON.stringify(text))
+  }
+})
+
+test('an inflected or embedded ultrathink does not boost', () => {
+  for (const text of ['ultrathinks', 'ultrathinking', 'ultrathinked', 'xultrathink', 'preultrathinkpost']) {
+    assert.equal(hasUltrathinkKeyword(text), false, JSON.stringify(text))
+  }
+})
+
+test('the same shapes still do not opt in as ultracode', () => {
+  const rejected = [
+    '\u0060ultracode\u0060',
+    '"ultracode"',
+    "'ultracode'",
+    '<ultracode>',
+    '{ultracode}',
+    '[ultracode]',
+    '(ultracode)',
+    '/ultracode',
+    'please /ultracode',
+    'ultracode.js',
+    '-ultracode',
+    'ultracode?',
+    'ultracode/',
+  ]
+  for (const text of rejected) {
+    assert.equal(hasUltraKeyword(text), false, JSON.stringify(text))
+  }
+})
+
+test('the two keywords treat the same shapes differently', () => {
+  const shapes = ['\u0060%s\u0060', '"%s"', "'%s'", '<%s>', '{%s}', '[%s]', '(%s)', '/%s', 'please /%s', '%s.js', '%s?', '-%s', '%s/']
+  for (const shape of shapes) {
+    const ultrathink = shape.replaceAll('%s', 'ultrathink')
+    const ultracode = shape.replaceAll('%s', 'ultracode')
+    assert.equal(hasUltrathinkKeyword(ultrathink), true, 'ultrathink: ' + ultrathink)
+    assert.equal(hasUltraKeyword(ultracode), false, 'ultracode: ' + ultracode)
+  }
 })
 
 test('the ultrathink offsets index the matched text', () => {
@@ -172,19 +238,6 @@ test('the ultrathink offsets index the matched text', () => {
   assert.equal(matches.length, 1)
   assert.equal(text.slice(matches[0].start, matches[0].end), 'ultrathink')
   assert.equal(matches[0].word, 'ultrathink')
-})
-
-test('a delimited or slash-prefixed ultrathink is rejected', () => {
-  const rejected = ['\u0060ultrathink\u0060', '"ultrathink"', "'ultrathink'", '<ultrathink>', '{ultrathink}', '[ultrathink]', '(ultrathink)', '/ultrathink', 'please /ultrathink']
-  for (const text of rejected) {
-    assert.equal(hasUltrathinkKeyword(text), false, JSON.stringify(text))
-  }
-})
-
-test('an ultrathink glued to a path or name character is rejected', () => {
-  for (const text of ['ultrathink.js', 'ultrathinks', 'xultrathink', 'ultrathink?', '-ultrathink', 'ultrathink/']) {
-    assert.equal(hasUltrathinkKeyword(text), false, JSON.stringify(text))
-  }
 })
 
 test('the two keywords do not trigger each other', () => {

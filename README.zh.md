@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.5.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.6.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。
@@ -50,7 +50,9 @@ dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.5.tgz"
 
 下一次模型请求会携带映射后的强度，并在系统提示词里带上一段：Claude 的 ultracode 指令 + DSH 智能体团队用法说明。该模式对后续请求与子智能体持续生效。选任一更低档位（在本卡片或 `/model` 里）会让下一次组装改为materialize Claude 的退出文案。
 
-prompt 里出现整词 `ultracode` 时，即使没有选中该档位，那一轮也会被纳入编排 —— 这就是 Claude 的关键字触发器。出现 `ultrathink` 则把那一轮的强度提到模型顶层，且不动滑条档位。匹配器就是 Claude 的那个：以斜杠指令开头的 prompt 会被忽略，引号、反引号、括号内的关键字同样被忽略，紧贴路径分隔符或文件扩展名的也不算。两个关键字各带自己的 section；档位激活时，它们与常驻提醒并存。
+prompt 里出现整词 `ultracode` 时，即使没有选中该档位，那一轮也会被纳入编排 —— 这就是 Claude 的关键字触发器。出现 `ultrathink` 则把那一轮的强度提到模型顶层，且不动滑条档位。两个关键字各带自己的 section；档位激活时，它们与常驻提醒并存。
+
+两个关键字用的是 Claude 各自的匹配器，**两者并不相同**。`ultracode` 走那套带跨度扫描的匹配（同一套也驱动 Claude 的输入框高亮）：以斜杠指令开头的 prompt 会被忽略，引号、反引号、括号内的关键字同样被忽略，紧贴路径分隔符或文件扩展名的也不算。`ultrathink` 则走它提醒发送处那个朴素的 `/\bultrathink\b/i`，因此带引号、反引号、斜杠前缀或点号的 `ultrathink` 都会触发，而带词形变化的不会。
 
 模式是持久的：它由已记录的 `system/message` 折叠进 `claudeUltraMode` 会话投影，因此刷新或恢复会话都能在没有新请求的情况下还原第五格。
 
@@ -91,6 +93,8 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 
 退出文案的第二句复述了 Claude Workflow 工具描述里的 opt-in 规则（`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`），也就是第一句所指的那条规则。
 
+Claude 的关键字家族里还有 `ultraplan` 与 `ultrareview`，本插件没有实现。它们不属于提醒家族：attachment 表里 Ultra 相关的条目恰好只有四条（`ultrathink_effort`、`workflow_keyword_request`、`ultra_effort_enter`、`ultra_effort_exit`），那两个词属于 Claude 的计划模式与代码审查功能，在这个层面上没有 DSH 对应物。
+
 提醒节奏同样是 Claude 的，取自同一 bundle 里的 attachment 构造器：进入 Ultra 的第一轮发完整文案，之后每 10 条用户 prompt 发一次短文案，模式结束时发一次退出文案，其余轮次**完全不发** section。Claude 的算法是从对话末尾往回找到最近的 Ultra 提醒、再数它之后的用户消息；本插件则用投影里一个可持久化的 prompt 计数来量，两者是同一个数。
 
 <a id="兼容性"></a>
@@ -122,7 +126,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 258 条断言。每条 spec 都有已记录的负向证明。
+`npm test` 会构建 Host bundle 与可被 Node 加载的浏览器 bundle，并对强度映射、arm 存储、投影折叠、锁定的提示词文本、提醒解析、关键字匹配器与其存储、arm 路由的每个分支、浏览器档位跑 266 条断言。每条 spec 都有已记录的负向证明。
 
 `npm run smoke` 是端到端那条通道，也是唯一能证明"接线正确"而不只是"单元正确"的。它把两个插件通过构建好的 CLI 打包安装进一次性的 `DSH_HOME` profile，把夹具提供商指向一个会记录每个请求体的本地 OpenAI 兼容端点，从 checkout 启动 `dsh web`，并用 Microsoft Edge 真实操作卡片。它断言：第五档 Ultra 存在；选中它会把 `reasoning_effort: max` 发上线并带上进入文案；在较低档位下发含 `ultracode` 的 prompt 会改为带上关键字文案；以及该 opt-in 不会延续到下一轮。它需要切换器与本包并排（或用 `DSH_SWITCHER_TGZ` 指向已打包的归档）、构建好的 DSH checkout、以及 Microsoft Edge；证据落在 `.runtime/browser-*`。
 
