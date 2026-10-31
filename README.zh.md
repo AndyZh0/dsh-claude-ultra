@@ -34,7 +34,7 @@ kind: "package-bundle"
 npm install --ignore-scripts --workspaces=false
 npm run build
 npm pack
-dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.1.tgz"
+dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.2.tgz"
 ```
 
 装进你实际使用的 profile。`dsh plugin add` 会追加 bundle 行并在 profile 目录内跑 pnpm。profile 在启动时组合 bundle 行，所以之后要重启应用；`patchReload: live` 只重载 patch 与 config，不挂载新的 bundle 行。
@@ -50,6 +50,8 @@ dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.1.tgz"
 
 下一次模型请求会携带映射后的强度，并在系统提示词里带上一段：Claude 的 ultracode 指令 + DSH 智能体团队用法说明。该模式对后续请求与子智能体持续生效。选任一更低档位（在本卡片或 `/model` 里）会让下一次组装改为materialize Claude 的退出文案。
 
+prompt 里出现整词 `ultracode` 时，即使没有选中该档位，那一轮也会被纳入编排 —— 这就是 Claude 的关键字触发器。匹配器就是 Claude 的那个：以斜杠指令开头的 prompt 会被忽略，引号、反引号、括号内的关键字同样被忽略，紧贴路径分隔符或文件扩展名的也不算。那一轮会单独拿到 Claude 的关键字提醒；档位激活时，它与常驻提醒并存。
+
 模式是持久的：它由已记录的 `system/message` 折叠进 `claudeUltraMode` 会话投影，因此刷新或恢复会话都能在没有新请求的情况下还原第五格。
 
 <a id="工作原理"></a>
@@ -59,7 +61,7 @@ dsh plugin --profile <profile> add "./dsh-claude-ultra-0.1.1.tgz"
 2. 应用该档位时先走标准模型选择路径提交这个强度。Host 收到的是与 `/model` 完全相同的 `session.selectModel`；不存在第二条选择路径。
 3. 浏览器随后以会话、provider、model、映射强度调用 `/api/dsh-claude-ultra/arm`。Host 通过 `llm.resolveModelInfo` 与 `llm.resolveCallConfig` 校验该路由，并为该会话存下一份内存中的 arm。
 4. 下一次系统提示词组装把 arm 与该会话的 pending 或 last-used 选择比对。命中则 materialize 进入文案；在进入快照之后又发生选择则 materialize 退出文案；自身没有快照的子智能体继承处于激活状态的父级。
-5. 承载该 section 的 `system/message` 会被记录。`claudeUltraMode` 投影把该文本与 `model/selection` 事件折叠为 `{ mode, dirty }`，其中 `mode` 为 `'full'`、`'still'`、`'off'` 或 `null`。档位的激活面是"处于进入态且不 dirty"，所以选低档会立即让第五格熄灭，而下一次请求仍会收到退出文案。
+5. 承载这些 section 的 `system/message` 会被记录。`claudeUltraMode` 投影把该文本、`model/selection` 事件、以及最新一条手打 prompt 折叠为 `{ mode, dirty, keyword }`，其中 `mode` 为 `'full'`、`'still'`、`'off'` 或 `null`，`keyword` 记录该 prompt 是否含 ultracode 关键字。档位的激活面是"处于进入态且不 dirty"，所以选低档会立即让第五格熄灭，而下一次请求仍会收到退出文案。
 6. `agent/request` 监听器在它武装的那次请求之后消费 arm；之后的选择、智能体销毁或会话拆除都无法复用陈旧的意图。
 
 ### 为什么用系统提示词 section
@@ -84,8 +86,8 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 | `ultra_effort_enter`（full） | Ultracode is on: optimize for the most exhaustive, correct answer — not the fastest or cheapest. Use the 'subagent' and 'subagent_fork' tools on every substantive task; token cost is not a constraint. See the **Ultracode** section and quality patterns in the DSH agent-team usage notes below. Solo only on conversational/trivial turns. |
 | `ultra_effort_enter`（sparse） | Ultracode is still on — use the 'subagent' and 'subagent_fork' tools; see the Ultracode section of the DSH agent-team usage notes below. |
 | `ultra_effort_exit` | Ultracode is off — the standard opt-in rule for multi-agent delegation applies again. Only delegate when the user has explicitly asked for sub-agents, delegation, or parallel agent work; a task that would merely benefit from parallelism does not count. |
-| `workflow_keyword_request` | 不发出。为将来的按轮触发器锁定在 `src/prompts.ts`。 |
-| `ultrathink_effort` | 不发出。同上。 |
+| `workflow_keyword_request` | The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the 'subagent' and 'subagent_fork' tools to fulfill the request. |
+| `ultrathink_effort` | 不发出。锁定在 `src/prompts.ts`；它提升的是单轮强度而不是切换模式，而本插件的强度入口是滑条。 |
 
 退出文案的第二句复述了 Claude Workflow 工具描述里的 opt-in 规则（`ONLY call this tool when the user has explicitly opted into multi-agent orchestration…`），也就是第一句所指的那条规则。
 
@@ -95,14 +97,14 @@ Claude 的 ultracode 是一个会话级开关，与强度档位并列在强度�
 - 已在 DSH `0.2.1-rc.5`（服务 `web` profile 的桌面运行时）与 `0.2.0-rc.2` checkout 上验证。
 - 同一 profile 中的 `dsh-codex-effort-switcher` 0.2.0 或更新版本。
 - Web 平台客户端 bundle；Host 半是普通的 bundle patch 行。
-- 无 DSH 核心改动、无新会话事件类型：模式走既有的 `system/message` 与 `model/selection` 事件，`SESSION_FORMAT_VERSION` 不变。
+- 无 DSH 核心改动、无新会话事件类型：模式走既有的 `system/message`、`user/message` 与 `model/selection` 事件，`SESSION_FORMAT_VERSION` 不变。
 
 <a id="已知限制与后续工作"></a>
 ## 已知限制与后续工作
 
 - **必须安装切换器。** `dsh-codex-effort-switcher` 必须在同一 profile 中。浏览器半通过 `ctx.get` 而非 `ctx.inject` 读取它的 `codexModelTiers` 服务，因为 pending 的 inject 会被客户端启动审计判为插件加载失败并让整个界面白屏；因此没有切换器的组合能正常加载，只是不贡献任何档位。
 - **提醒节奏。** Claude 在第一轮发出进入提醒，之后每 10 个用户轮次发一次稀疏提醒（`Uxr()`），退出时只发一次。本插件每次组装都会重申进入提醒（先是 full，之后是 still-on 文本），并在关闭态下持续重申退出文案。Claude 的提醒是消息附件，重复会撑大它的对话；本 section 是每次请求重建的系统提示词，重复不占额外上下文。文本是 Claude 的，频率是 DSH 语境下的等价做法。
-- **关键字触发器未接线。** Claude 还会在 prompt 含 `ultracode` 时把该轮纳入编排，含 `ultrathink` 时把该轮提升到 `xhigh`。本插件的入口是滑条。`AssembleContext` 只带 `{ scope, signal, agent }`，要拿到本轮用户文本需要额外的会话读取，超出本次范围。两段文案已锁定在 `src/prompts.ts`。
+- **`ultrathink` 关键字未接线。** Claude 在 prompt 含 `ultrathink` 时把那一轮提升到 `xhigh`。那属于单轮强度覆盖而非模式切换，而本插件的强度入口是滑条；文案已锁定在 `src/prompts.ts`。`ultracode` 关键字已接线，其匹配器是 Claude 那个的移植。
 - **默认选择会被保存。** 标准 `session.selectModel` 路径同时会把该选择保存为 profile 默认值，因此选中 Ultra 可能把顶层强度留作新会话的默认。保存的是强度而非模式，所以新会话可能以该强度开始却没有 Ultra 的指令。这是切换器共享的选择路径，不是 Ultra 独有的路径。
 - **首次请求前 arm 只在内存里。** 选中 Ultra 后立刻刷新页面会丢掉本地格子；首次请求之后由已记录的 system message 还原。
 - **卸载会留下历史。** 移除插件会停止新的 Ultra section 并移除第五格，但既有会话已记录的 system prompt 仍含模式文本；恢复该会话会看到旧指令。

@@ -11,7 +11,8 @@
  */
 import type { ClaudeUltraContext } from './ports.ts'
 import { createClaudeUltraArmStore } from './arms.ts'
-import { registerClaudeUltraSystemPrompt } from './context.ts'
+import { registerClaudeUltraKeywordCapture, registerClaudeUltraSystemPrompt } from './context.ts'
+import { createClaudeUltraKeywordStore } from './keyword-store.ts'
 import { claudeUltraModeProjection } from './projection.ts'
 import { registerClaudeUltraArmRoute } from './route.ts'
 
@@ -23,7 +24,10 @@ export const inject = ['systemPrompt', 'sessionProjections', 'sessions', 'connec
 
 export { createClaudeUltraArmStore } from './arms.ts'
 export type { UltraArmRecord, UltraArmStore } from './arms.ts'
-export { resolveClaudeUltraReminder } from './context.ts'
+export { registerClaudeUltraKeywordCapture, resolveClaudeUltraReminder } from './context.ts'
+export { createClaudeUltraKeywordStore } from './keyword-store.ts'
+export type { UltraKeywordStore } from './keyword-store.ts'
+export { textOfBlocks } from './keyword.ts'
 export { mappedUltraEffort } from './mode.ts'
 export type { UltraEffortCandidate } from './mode.ts'
 export { applyClaudeUltraModeProjection, claudeUltraModeProjection, EMPTY_CLAUDE_ULTRA_MODE_STATE } from './projection.ts'
@@ -33,9 +37,12 @@ export {
   CLAUDE_ULTRA_API_CHANNEL,
   CLAUDE_ULTRA_ARM_ENDPOINT,
   CLAUDE_ULTRA_ARM_PATH,
+  CLAUDE_ULTRA_KEYWORD_SECTION,
   CLAUDE_ULTRA_PROJECTION_KEY,
   CLAUDE_ULTRA_SYSTEM_SECTION,
 } from './protocol.ts'
+export { findUltraKeyword, hasUltraKeyword } from './keyword.ts'
+export type { UltraKeywordMatch } from './keyword.ts'
 export {
   ROOT_USAGE_HINT,
   SUBAGENT_USAGE_HINT,
@@ -53,8 +60,10 @@ export {
  */
 export function apply(ctx: ClaudeUltraContext): void {
   const arms = createClaudeUltraArmStore()
+  const keywords = createClaudeUltraKeywordStore()
   ctx.effect(() => ctx.sessionProjections.register(claudeUltraModeProjection), 'dsh-claude-ultra: projection')
-  ctx.effect(() => registerClaudeUltraSystemPrompt(ctx, arms), 'dsh-claude-ultra: system prompt')
+  ctx.effect(() => registerClaudeUltraSystemPrompt(ctx, arms, keywords), 'dsh-claude-ultra: system prompt')
+  ctx.effect(() => registerClaudeUltraKeywordCapture(ctx, keywords), 'dsh-claude-ultra: keyword capture')
   // The Fetch registration already rides the caller's fiber, so it needs no
   // second disposer here.
   registerClaudeUltraArmRoute(ctx, arms)
@@ -82,6 +91,8 @@ export function apply(ctx: ClaudeUltraContext): void {
   })
 
   ctx.on('agent/disposed', ({ agent }) => {
-    arms.clear(String(agent.session.id))
+    const sessionId = String(agent.session.id)
+    arms.clear(sessionId)
+    keywords.clear(sessionId)
   })
 }

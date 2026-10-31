@@ -1,6 +1,7 @@
-/** Durable Ultra mode projection folded from model-visible prompt snapshots. */
+/** Durable Ultra mode projection folded from the logged system messages. */
 import { z as zod } from 'zod'
 import type { UltraProjectionDefinition, UltraSessionEvent } from './ports.ts'
+import { textOfBlocks } from './keyword.ts'
 import { CLAUDE_ULTRA_PROJECTION_KEY } from './protocol.ts'
 import { ULTRA_ENTER_FULL, ULTRA_ENTER_STILL, ULTRA_EXIT } from './prompts.ts'
 
@@ -8,7 +9,8 @@ import { ULTRA_ENTER_FULL, ULTRA_ENTER_STILL, ULTRA_EXIT } from './prompts.ts'
  * Which Ultra reminder the last assembly materialized.
  *
  * Claude distinguishes the first entry into ultracode ('full') from a turn that
- * is already under it ('still'), and emits a separate reminder on exit.
+ * is already under it (its 'sparse' variant), and emits a separate reminder on
+ * exit.
  */
 export type UltraReminder = 'full' | 'still' | 'off'
 
@@ -29,6 +31,10 @@ const claudeUltraModeStateSchema = zod.object({
 
 /**
  * Advance the Ultra projection by one Session event.
+ *
+ * The fold deliberately ignores `user/message`: DSH logs `system/message`
+ * before it, so a keyword read from here would trail the turn by one. The
+ * keyword opt-in is held in memory instead, fed by `agent/inbox/inserted`.
  * @param state - state before the event.
  * @param event - next committed Session event.
  * @returns the original or advanced state.
@@ -42,9 +48,7 @@ export function applyClaudeUltraModeProjection(state: ClaudeUltraModeState, even
   // The Host materializes Ultra in the system prompt, so the logged system
   // message is the durable record of which reminder the model last received.
   if (event.type === 'system/message') {
-    const text = (event.data?.message?.content ?? [])
-      .map(block => (block.type === 'text' ? block.text ?? '' : ''))
-      .join('')
+    const text = textOfBlocks(event.data?.message?.content)
     if (text.includes(ULTRA_ENTER_FULL)) return state.mode === 'full' && !state.dirty ? state : { mode: 'full', dirty: false }
     if (text.includes(ULTRA_ENTER_STILL)) return state.mode === 'still' && !state.dirty ? state : { mode: 'still', dirty: false }
     if (text.includes(ULTRA_EXIT)) return state.mode === 'off' && !state.dirty ? state : { mode: 'off', dirty: false }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-claude-ultra",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Claude-style Ultra mode for DSH: the top reasoning effort plus standing multi-agent orchestration",
   "type": "module",
   "license": "MIT",

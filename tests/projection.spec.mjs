@@ -94,6 +94,19 @@ test('an unrelated event type leaves the state identical', () => {
   assert.equal(applyClaudeUltraModeProjection(before, { type: 'tool/call' }), before)
 })
 
+// DSH logs system/message (the assembled prompt) before user/message, so the
+// fold cannot read the prompt's keyword opt-in without trailing the turn by
+// one. The opt-in is held in memory instead, fed by agent/inbox/inserted.
+test('the fold ignores a user message, even one carrying the keyword', () => {
+  const before = state('off', false)
+  const typed = {
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'please ultracode this' }] },
+  }
+  assert.equal(applyClaudeUltraModeProjection(before, typed), before)
+  assert.equal(applyClaudeUltraModeProjection(before, { type: 'user/message' }), before)
+})
+
 test('the projection definition is keyed and versioned', () => {
   assert.equal(claudeUltraModeProjection.key, 'claudeUltraMode')
   assert.equal(claudeUltraModeProjection.stateVersion, 1)

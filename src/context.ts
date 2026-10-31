@@ -5,12 +5,15 @@ import type {
   UltraModelSelection,
   UltraModelSelectionProjection,
   UltraSession,
+  UltraUserMessage,
 } from './ports.ts'
+import { hasUltraKeyword, textOfBlocks } from './keyword.ts'
+import type { UltraKeywordStore } from './keyword-store.ts'
 import type { UltraArmRecord, UltraArmStore } from './arms.ts'
-import { CLAUDE_ULTRA_PROJECTION_KEY, CLAUDE_ULTRA_SYSTEM_SECTION } from './protocol.ts'
+import { CLAUDE_ULTRA_KEYWORD_SECTION, CLAUDE_ULTRA_PROJECTION_KEY, CLAUDE_ULTRA_SYSTEM_SECTION } from './protocol.ts'
 import type { ClaudeUltraModeState, UltraReminder } from './projection.ts'
 import { EMPTY_CLAUDE_ULTRA_MODE_STATE } from './projection.ts'
-import { ULTRA_ENTER_FULL, ULTRA_ENTER_STILL, ULTRA_EXIT, usageHintFor } from './prompts.ts'
+import { ULTRA_ENTER_FULL, ULTRA_ENTER_STILL, ULTRA_EXIT, ULTRA_KEYWORD_REQUEST, usageHintFor } from './prompts.ts'
 
 /**
  * Read one Session's Ultra projection.
@@ -102,6 +105,41 @@ function reminderText(reminder: UltraReminder): string {
 }
 
 /**
+ * Track the keyword opt-in of the prompt a turn is about to assemble.
+ *
+ * The opt-in cannot be folded from the Session log: DSH appends \`system/message\`
+ * before \`user/message\`, so a fold trails the turn by one. It is held in memory
+ * instead, set when the prompt enters the inbox and cleared once the turn that
+ * claimed it has assembled.
+ *
+ * The two hooks are ordered around the assembly by agent-loop \`agent.ts\`:
+ * \`inbox.claim\` and \`systemPrompt.assemble\` run before the \`agent/pre-step\`
+ * waterfall, so a prompt inserted before the turn is visible to its first
+ * assembly, and the claim — which would be too early — is not what clears it.
+ * @param ctx - Host context carrying the agent dispatch.
+ * @param keywords - per-Session keyword store.
+ * @returns the disposer removing both listeners.
+ */
+export function registerClaudeUltraKeywordCapture(ctx: ClaudeUltraContext, keywords: UltraKeywordStore): () => void {
+  const offInserted = ctx.on('agent/inbox/inserted', ({ agent, message }: { agent: UltraAgent; message: UltraUserMessage }) => {
+    if (message.source?.kind !== 'user') return
+    keywords.set(String(agent.session.id), hasUltraKeyword(textOfBlocks(message.content)))
+  })
+  const offPreStep = ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+    const consumed = messages.some((message: UltraUserMessage) => message.source?.kind === 'user')
+    const result = await next()
+    // A step that claimed a typed prompt belongs to the turn that prompt opened,
+    // so its assembly has already read the opt-in.
+    if (consumed) keywords.clear(String(agent.session.id))
+    return result
+  })
+  return () => {
+    offInserted()
+    offPreStep()
+  }
+}
+
+/**
  * Register the system-prompt section that carries the Ultra mode.
  *
  * A section contributed through this waterfall is retained by the assembly and
@@ -111,14 +149,24 @@ function reminderText(reminder: UltraReminder): string {
  * @param arms - pre-request arm store.
  * @returns the disposer removing the contribution.
  */
-export function registerClaudeUltraSystemPrompt(ctx: ClaudeUltraContext, arms: UltraArmStore): () => void {
+export function registerClaudeUltraSystemPrompt(ctx: ClaudeUltraContext, arms: UltraArmStore, keywords: UltraKeywordStore): () => void {
   return ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const result = await next()
     const agent = context.agent
     if (agent === undefined) return result
+    const sections = [...result.sections]
     const reminder = resolveClaudeUltraReminder(ctx, agent, arms)
-    if (reminder === null) return result
-    const text = usageHintFor(isSubagent(agent)) + String.fromCharCode(10) + String.fromCharCode(10) + reminderText(reminder)
-    return { ...result, sections: [...result.sections, { name: CLAUDE_ULTRA_SYSTEM_SECTION, text }] }
+    if (reminder !== null) {
+      sections.push({
+        name: CLAUDE_ULTRA_SYSTEM_SECTION,
+        text: usageHintFor(isSubagent(agent)) + String.fromCharCode(10) + String.fromCharCode(10) + reminderText(reminder),
+      })
+    }
+    // Claude emits the keyword reminder in the same turn as the standing one,
+    // so this rides its own section rather than replacing it.
+    if (keywords.get(String(agent.session.id))) {
+      sections.push({ name: CLAUDE_ULTRA_KEYWORD_SECTION, text: ULTRA_KEYWORD_REQUEST })
+    }
+    return sections.length === result.sections.length ? result : { ...result, sections }
   })
 }

@@ -16,3 +16,6 @@ export const CLAUDE_ULTRA_PROJECTION_KEY = 'claudeUltraMode'
 
 /** Stable system-prompt section that carries the mode to every model request. */
 export const CLAUDE_ULTRA_SYSTEM_SECTION = 'claude-ultra:mode'
+
+/** Stable system-prompt section that carries a turn's keyword opt-in. */
+export const CLAUDE_ULTRA_KEYWORD_SECTION = 'claude-ultra:keyword'

@@ -17,6 +17,13 @@ export interface UltraSessionEvent {
   }
 }
 
+/** One user message, as the inbox and the Session log carry it. */
+export interface UltraUserMessage {
+  readonly content?: readonly UltraContentBlock[]
+  /** Where the message came from; \`user\` marks a prompt the human typed. */
+  readonly source?: { readonly kind?: string }
+}
+
 /** One block of a logged message. */
 export interface UltraContentBlock {
   readonly type: string
@@ -158,6 +165,17 @@ export interface ClaudeUltraContext {
     listener: (assembly: UltraPromptAssembly, context: UltraAssembleContext, next: () => Promise<UltraPromptAssembly>) => Promise<UltraPromptAssembly>,
   ): () => void
   on(event: 'session/event', listener: (session: UltraSession, event: UltraSessionEvent) => void): () => void
+  on(
+    event: 'agent/inbox/inserted',
+    listener: (payload: { readonly agent: UltraAgent; readonly message: UltraUserMessage }) => void,
+  ): () => void
+  on(
+    event: 'agent/pre-step',
+    listener: (
+      payload: { readonly agent: UltraAgent; readonly messages: readonly UltraUserMessage[] },
+      next: () => Promise<unknown>,
+    ) => Promise<unknown>,
+  ): () => void
   on(
     event: 'agent/request',
     listener: (payload: { readonly agent: UltraAgent }, next: () => Promise<UltraCallConfig>) => Promise<UltraCallConfig>,
